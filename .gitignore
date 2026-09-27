@@ -1,0 +1,18 @@
+# Visual Studio local settings and cache
+.vs/
+*.user
+*.suo
+
+# Build output (all project directories)
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+
+# Sourcetrail generated index and local bookmarks
+*.srctrldb
+*.srctrlbm
+compile_commands.json
+
+# Independent notes repository
+/notes/
