@@ -1,4 +1,4 @@
-#define GLFW_INCLUDE_VULKAN
+﻿#define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
 #include <vector>
@@ -27,6 +27,9 @@ int main() {
 
 	// 创建 Vulkan 渲染器
 	if (vulkanRenderer.init(window) == EXIT_FAILURE) {
+		// 渲染器会清理已创建的 Vulkan 对象；窗口和 GLFW 由这里负责清理。
+		glfwDestroyWindow(window);
+		glfwTerminate();
 		return EXIT_FAILURE;
 	}
 
