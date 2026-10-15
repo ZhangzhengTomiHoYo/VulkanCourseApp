@@ -104,6 +104,12 @@ void VulkanRenderer::createLogicalDevice()
 
 	// 逻辑设备  将要使用的 物理设备的特性
 	VkPhysicalDeviceFeatures deviceFeatures{};
+
+	// depthClamp 是物理设备的可选功能：只有创建设备时启用后，管线才能使用深度钳制。
+	// 注意：当前管线的 depthClampEnable 仍为 VK_FALSE，所以目前其实用不到该功能；
+	// 如果以后设为 VK_TRUE，还应先用 vkGetPhysicalDeviceFeatures() 检查 GPU 是否支持。
+	deviceFeatures.depthClamp = VK_TRUE;
+
 	deviceCreateInfo.pEnabledFeatures = &deviceFeatures;
 
 	// 根据选中的物理设备创建逻辑设备，同时创建上面申请的队列。
@@ -215,6 +221,301 @@ void VulkanRenderer::createSwapChain()
 		SwapChainImages.push_back(swapchainImage);
 
 	}
+}
+
+void VulkanRenderer::createRenderPass()
+{
+	// Attachment（附件）可以理解为“一次渲染要读写的图像槽位”。
+	// 这里暂时只有一个颜色附件，真正放进该槽位的会是某张交换链图像的 Image View。
+	VkAttachmentDescription colorAttachment{};
+	// 附件格式必须与以后创建 Framebuffer 时绑定的交换链图像格式一致。
+	colorAttachment.format = swapChainImageFormat;
+	// 每个像素只采样一次，说明目前未启用 MSAA。
+	colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+	// 开始 Render Pass 时不保留旧颜色，而是用 vkCmdBeginRenderPass 提供的 clearColor 清屏。
+	colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	// 结束后保留渲染结果，因为交换链还要把这张图像呈现到屏幕。
+	colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	// 当前没有模板附件，因此模板数据在开始和结束时都不需要处理。
+	colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+
+	// UNDEFINED 表示不关心图像进入 Render Pass 前的内容和布局；这与上面的 CLEAR 配合使用。
+	// Vulkan 会在 Render Pass 内部把图像转换到子通道需要的颜色附件布局。
+	colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	// Render Pass 结束时再转换为呈现布局，让 vkQueuePresentKHR 可以读取它。
+	colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+	// AttachmentDescription 说明“槽位里的图像怎样使用”；AttachmentReference 则说明
+	// “当前子通道要使用第几个槽位，以及使用时需要什么布局”。
+	VkAttachmentReference colorAttachmentRef{};
+	// attachment = 0 对应下面 pAttachments 数组中的第 0 个，也就是 colorAttachment。
+	colorAttachmentRef.attachment = 0;
+	// 子通道写颜色时，图像应处于最适合颜色附件读写的布局。
+	colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+	// Subpass（子通道）描述 Render Pass 内的一段实际渲染工作。
+	// 当前只有一个子通道：使用图形管线，并把结果写入上面的颜色附件。
+	VkSubpassDescription subpass{};
+	subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+	subpass.colorAttachmentCount = 1;
+	// 这里保存的是引用数组的地址；只有一个颜色附件，所以直接传单个变量的地址。
+	subpass.pColorAttachments = &colorAttachmentRef;
+
+	// Dependency（依赖）规定子通道与外部操作之间的执行、内存先后关系。
+	// 阅读一条依赖时，可以把 src 理解为“前一项工作”，把 dst 理解为“后一项工作”：
+	// 先确定 srcSubpass 和 dstSubpass 分别是谁，再用 Stage 指定要同步到管线的哪个阶段，
+	// 最后用 Access 指定该阶段的哪种内存读写必须完成或可以开始。
+	// [0] 控制进入子通道前的等待，[1] 控制离开子通道后的可见性。
+	std::array<VkSubpassDependency, 2> subpassDependencies {};
+
+	// 第一条依赖的来源：VK_SUBPASS_EXTERNAL 表示当前 Render Pass 外部、发生在它之前的操作。
+	subpassDependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+	// 来源阶段：等外部操作运行到管线底部，表示它已经走到执行流程的末端。
+	subpassDependencies[0].srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+	// 来源访问：外部操作在进入这个同步点之前进行的内存读取必须已经完成。
+	subpassDependencies[0].srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+
+	// 第一条依赖的目标：Render Pass 中编号为 0 的子通道，也就是上面唯一的 subpass。
+	subpassDependencies[0].dstSubpass = 0;
+	// 目标阶段：第 0 个子通道执行到“颜色附件输出”阶段时，需要受到这条依赖约束。
+	subpassDependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+	// 目标访问：依赖满足后，该阶段才能读取或写入颜色附件。
+	subpassDependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+	// 依赖选项：0 表示不启用 BY_REGION 等额外行为，按普通的完整依赖处理。
+	subpassDependencies[0].dependencyFlags = 0;
+
+	// 第二条依赖的来源：编号为 0 的子通道；方向与第一条依赖相反。
+	subpassDependencies[1].srcSubpass = 0;
+	// 来源阶段：关注第 0 个子通道的“颜色附件输出”阶段。
+	subpassDependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+	// 来源访问：该阶段对颜色附件的读取和写入必须完成后，外部操作才能继续。
+	subpassDependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+	// 第二条依赖的目标：VK_SUBPASS_EXTERNAL 表示 Render Pass 结束后的外部操作。
+	subpassDependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+	// 目标阶段：外部操作在管线底部等待，直到上面的颜色附件工作完成。
+	subpassDependencies[1].dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+	// 目标访问：依赖满足后，外部操作才能读取这张已经完成渲染的图像。
+	subpassDependencies[1].dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+	// 依赖选项：同样不启用任何额外依赖标志。
+	subpassDependencies[1].dependencyFlags = 0;
+
+	// 最后把“有哪些附件、有哪些子通道、它们如何同步”汇总成 Render Pass 创建信息。
+	VkRenderPassCreateInfo renderPassCreateInfo{};
+	renderPassCreateInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+	// attachmentCount 与 pAttachments 必须配套：这里传入一份颜色附件描述。
+	renderPassCreateInfo.attachmentCount = 1;
+	renderPassCreateInfo.pAttachments = &colorAttachment;
+	// 当前 Render Pass 只有一个子通道。
+	renderPassCreateInfo.subpassCount = 1;
+	renderPassCreateInfo.pSubpasses = &subpass;
+	// std::array::size() 给出依赖数量，data() 给出第一个依赖的地址。
+	renderPassCreateInfo.dependencyCount = static_cast<uint32_t>(subpassDependencies.size());
+	renderPassCreateInfo.pDependencies = subpassDependencies.data();
+
+	// Render Pass 隶属于逻辑设备；创建成功后，句柄被保存到成员 renderPass。
+	VkResult result = vkCreateRenderPass(mainDevices.logicalDevice, &renderPassCreateInfo, nullptr, &renderPass);
+	if (result != VK_SUCCESS) {
+		throw std::runtime_error("Failed to create render pass!");
+	}
+}
+
+void VulkanRenderer::createGraphicsPipeline()
+{
+	// 这里读取的不是 .vert/.frag GLSL 源码，而是 glslangValidator 编译出的 SPIR-V 二进制。
+	// Vulkan 驱动接收 SPIR-V，这样不同显卡驱动不必各自解析一套高级着色器语言。
+	auto vertexShaderCode = readFile("Shaders/shader.vert.spv");
+	auto fragmentShaderCode = readFile("Shaders/shader.frag.spv");
+
+	// Shader Module 是逻辑设备对一份 SPIR-V 代码的临时包装。
+	// 创建 Module 不等于执行着色器；真正绘制时使用的是后面创建的图形管线。
+	VkShaderModule verteShaderModule = createShaderModule(vertexShaderCode);
+	VkShaderModule fragmentShaderModule = createShaderModule(fragmentShaderCode);
+
+	// 描述“哪一个 Shader Module 用作顶点着色器，以及从哪个入口函数开始执行”。
+	VkPipelineShaderStageCreateInfo vertexShaderStageInfo{};
+	vertexShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	// 同一份创建信息结构可描述不同阶段；这里明确指定为顶点阶段。
+	vertexShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+	// 绑定上面由 shader.vert.spv 创建的 Shader Module。
+	vertexShaderStageInfo.module = verteShaderModule;
+	// GLSL 中的入口函数是 void main()，因此入口名称写作 "main"。
+	vertexShaderStageInfo.pName = "main";
+
+	// 片段阶段的填写方式相同，只是阶段类型和 Shader Module 不同。
+	VkPipelineShaderStageCreateInfo fragmentShaderStageInfo{};
+	fragmentShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	fragmentShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+	fragmentShaderStageInfo.module = fragmentShaderModule;
+	fragmentShaderStageInfo.pName = "main";
+
+	// 图形管线创建信息最终需要一个“着色器阶段数组”。
+	// 目前只有顶点和片段两个可编程阶段；后面调用 vkCreateGraphicsPipelines() 时会用到它。
+	VkPipelineShaderStageCreateInfo shaderStages[] = { vertexShaderStageInfo, fragmentShaderStageInfo };
+
+	// -- Vertex Input（顶点输入）--
+	// 这个阶段描述“如何从顶点缓冲区读取每个顶点的数据”。
+	// 当前顶点位置和颜色直接写在 shader.vert 数组中，并通过 gl_VertexIndex 读取，
+	// 所以暂时没有顶点缓冲区，也就不需要绑定描述和属性描述。
+	VkPipelineVertexInputStateCreateInfo vertexInputCreateInfo{};
+	vertexInputCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+	// binding 描述一整条顶点数据流，例如每个顶点占多少字节、按顶点还是按实例前进。
+	vertexInputCreateInfo.vertexBindingDescriptionCount = 0;
+	vertexInputCreateInfo.pVertexBindingDescriptions = nullptr;
+	// attribute 描述数据流中各属性的位置和格式，例如 position 是 vec3、color 是 vec3。
+	vertexInputCreateInfo.vertexAttributeDescriptionCount = 0;
+	vertexInputCreateInfo.pVertexAttributeDescriptions = nullptr;
+
+	// -- Input Assembly（输入装配）--
+	// 输入装配决定怎样把顶点组合成“图元”。图元可以是点、线或三角形。
+	VkPipelineInputAssemblyStateCreateInfo inputAssemblyCreateInfo{};
+	inputAssemblyCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+	// TRIANGLE_LIST 每三个顶点组成一个互不相连的三角形：0/1/2 是第一个，3/4/5 是第二个。
+	inputAssemblyCreateInfo.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	// 图元重启主要用于带索引的 STRIP：遇到特殊索引时结束当前条带并重新开始。
+	// 当前使用 TRIANGLE_LIST，而且还没有索引缓冲区，因此关闭它。
+	inputAssemblyCreateInfo.primitiveRestartEnable = VK_FALSE;
+
+	// -- Viewport & Scissor（视口与裁剪矩形）--
+	// 顶点着色器输出的是标准化坐标，viewport 负责把它映射到交换链图像的像素区域。
+	VkViewport viewport{};
+	// 左上角从交换链图像的 (0, 0) 开始，宽高覆盖整张交换链图像。
+	viewport.x = 0.0f;
+	viewport.y = 0.0f;
+	viewport.width = static_cast<float>(swapChainExtent.width);
+	viewport.height = static_cast<float>(swapChainExtent.height);
+	// Vulkan 的视口深度范围是 0.0 到 1.0，之后会用于深度测试。
+	viewport.minDepth = 0.0f;
+	viewport.maxDepth = 1.0f;
+
+	// scissor 是硬裁剪区域：落在矩形外面的片段不会写入颜色附件。
+	// 这里同样覆盖整张交换链图像，因此暂时不会额外裁掉画面。
+	VkRect2D scissor{};
+	scissor.offset = {0, 0};
+	scissor.extent = swapChainExtent;
+
+	// 管线通过这个汇总结构取得视口和裁剪矩形。
+	// 这里保存的是指针，所以 viewport 和 scissor 必须活到创建图形管线的调用结束。
+	VkPipelineViewportStateCreateInfo viewportStateCreateInfo{};
+	viewportStateCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+	viewportStateCreateInfo.viewportCount = 1;
+	viewportStateCreateInfo.pViewports = &viewport;
+	viewportStateCreateInfo.scissorCount = 1;
+	viewportStateCreateInfo.pScissors = &scissor;
+
+	// -- Dynamic States（动态状态）--
+	// 这里暂不启用动态状态，因此 viewport、scissor 等值会固定在图形管线中。
+	// 将来若把它们设为动态状态，就能在录制命令时修改，而不必重新创建整条管线。
+
+	// -- Rasterizer（光栅化）--
+	// 光栅化器把输入装配产生的三角形转换成许多片段，交给片段着色器处理。
+	VkPipelineRasterizationStateCreateInfo rasterizerCreateInfo{};
+	rasterizerCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+	// FALSE：超出近、远深度范围的部分会被裁掉；TRUE 才会把深度钳制到范围内。
+	// 开启 TRUE 需要在逻辑设备中启用 deviceFeatures.depthClamp。
+	rasterizerCreateInfo.depthClampEnable = VK_FALSE;
+	// TRUE 会在光栅化前直接丢弃所有图元，不产生任何片段；正常绘制应保持 FALSE。
+	rasterizerCreateInfo.rasterizerDiscardEnable = VK_FALSE;
+	// FILL 填满三角形内部；LINE/WIREFRAME 等非填充模式需要额外设备功能支持。
+	rasterizerCreateInfo.polygonMode = VK_POLYGON_MODE_FILL;
+	// 只有绘制线图元或线框时线宽才明显；大于 1.0 通常需要 wideLines 功能。
+	rasterizerCreateInfo.lineWidth = 1.0f;
+	// 背面剔除：只光栅化朝向摄像机的正面，减少不可见片段的工作量。
+	rasterizerCreateInfo.cullMode = VK_CULL_MODE_BACK_BIT;
+	// 顺时针排列的顶点被认定为正面。该判断还会受到 viewport 的 Y 方向影响。
+	rasterizerCreateInfo.frontFace = VK_FRONT_FACE_CLOCKWISE;
+	// 深度偏移常用于阴影贴图等场景，稍微移动深度以减轻 Z-fighting；当前不需要。
+	rasterizerCreateInfo.depthBiasEnable = VK_FALSE;
+
+	// -- Multisampling（多重采样抗锯齿）--
+	VkPipelineMultisampleStateCreateInfo multisamplingCreateInfo{};
+	multisamplingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+	// sampleShadingEnable 控制是否让片段着色器按采样点运行，它本身不是 MSAA 总开关。
+	multisamplingCreateInfo.sampleShadingEnable = VK_FALSE;
+	// 每像素只有一个采样点，等于当前未启用 MSAA；以后可改为 2/4/8 个采样点。
+	multisamplingCreateInfo.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+	// -- Color Blending（颜色混合）--
+	// 颜色混合决定“片段着色器的新颜色”怎样与“附件里已有的颜色”合并。
+	VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+	// 允许写入颜色附件的 R、G、B、A 四个通道；缺少某一位就不会更新对应通道。
+	colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+	// 开启后使用下面的因子和操作计算输出；关闭时通常直接覆盖原颜色。
+	colorBlendAttachment.blendEnable = VK_TRUE;
+
+	// RGB 公式：最终颜色 = 新颜色 × 新 Alpha + 旧颜色 × (1 - 新 Alpha)。
+	// 这是最常见的普通透明混合。例如新 Alpha 为 0.25，新颜色占 25%，旧颜色占 75%。
+	colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+	colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+	colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+
+	// Alpha 公式：最终 Alpha = 1 × 新 Alpha + 0 × 旧 Alpha = 新 Alpha。
+	colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+	colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+	colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+	VkPipelineColorBlendStateCreateInfo colorBlendingCreateInfo{};
+	colorBlendingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+	// 逻辑操作是按位 AND/OR/XOR 等另一套合并方式；这里使用上面的数值混合，因此关闭。
+	colorBlendingCreateInfo.logicOpEnable = VK_FALSE;
+	// 当前只有一个颜色附件，因此只需要一份 attachment 混合配置。
+	colorBlendingCreateInfo.attachmentCount = 1;
+	colorBlendingCreateInfo.pAttachments = &colorBlendAttachment;
+
+	// Pipeline Layout 是着色器访问外部资源时的“接口布局”。
+	// 当前着色器只使用自身写死的顶点数组，没有描述符集合和 Push Constant，因此两项数量都为 0。
+	VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo{};
+	pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	pipelineLayoutCreateInfo.setLayoutCount = 0;
+	pipelineLayoutCreateInfo.pSetLayouts = nullptr;
+	pipelineLayoutCreateInfo.pushConstantRangeCount = 0;
+	pipelineLayoutCreateInfo.pPushConstantRanges = nullptr;
+
+	// 即使布局内容为空，也必须创建一个 VkPipelineLayout，图形管线不能省略它。
+	VkResult result = vkCreatePipelineLayout(mainDevices.logicalDevice, &pipelineLayoutCreateInfo, nullptr, &pipelineLayout);
+	if (result != VK_SUCCESS) {
+		throw std::runtime_error("Failed to create pipeline layout!");
+	}
+
+	// -- Depth Stencil Test（深度与模板测试）--
+	// 当前 Render Pass 没有深度/模板附件，所以不提供该阶段的创建信息。
+
+	// 前面每个 CreateInfo 只描述管线的一部分；这里把它们的地址汇总起来，创建完整图形管线。
+	VkGraphicsPipelineCreateInfo pipelineCreateInfo{};
+	pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+	// 两个可编程阶段：顶点着色器和片段着色器。
+	pipelineCreateInfo.stageCount = 2;
+	pipelineCreateInfo.pStages = shaderStages;
+	// 以下指针分别连接顶点输入、图元装配、视口、光栅化、多重采样和颜色混合状态。
+	pipelineCreateInfo.pVertexInputState = &vertexInputCreateInfo;
+	pipelineCreateInfo.pInputAssemblyState = &inputAssemblyCreateInfo;
+	pipelineCreateInfo.pViewportState = &viewportStateCreateInfo;
+	// 没有启用动态状态，因此创建后不能在命令中临时修改这些固定配置。
+	pipelineCreateInfo.pDynamicState = nullptr;
+	pipelineCreateInfo.pRasterizationState = &rasterizerCreateInfo;
+	pipelineCreateInfo.pMultisampleState = &multisamplingCreateInfo;
+	pipelineCreateInfo.pColorBlendState = &colorBlendingCreateInfo;
+	// 没有深度/模板附件，因此这里可以是 nullptr。
+	pipelineCreateInfo.pDepthStencilState = nullptr;
+	// 管线布局规定着色器资源接口；Render Pass 与 subpass 规定这条管线的输出目标必须兼容什么结构。
+	pipelineCreateInfo.layout = pipelineLayout;
+	pipelineCreateInfo.renderPass = renderPass;
+	pipelineCreateInfo.subpass = 0;
+
+	// 当前没有从另一条管线派生创建，所以基管线句柄为空，索引为 -1。
+	pipelineCreateInfo.basePipelineHandle = VK_NULL_HANDLE;
+	pipelineCreateInfo.basePipelineIndex = -1;
+
+	// 第二个参数本可传 Pipeline Cache 来复用编译结果；当前传空表示不使用缓存。
+	// 成功后，Vulkan 把新建的 VkPipeline 句柄写入 graphicsPipeline。
+	result = vkCreateGraphicsPipelines(mainDevices.logicalDevice, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &graphicsPipeline);
+	if (result != VK_SUCCESS) {
+		throw std::runtime_error("Failed to create graphics pipeline!");
+	}
+
+	// 管线会保存创建后所需的着色器状态，因此 Module 不必一直保留到程序结束。
+	vkDestroyShaderModule(mainDevices.logicalDevice, fragmentShaderModule, nullptr);
+	vkDestroyShaderModule(mainDevices.logicalDevice, verteShaderModule, nullptr);
 }
 
 void VulkanRenderer::getPhysicalDevice()
@@ -475,6 +776,27 @@ VkImageView VulkanRenderer::createImageView(VkImage image, VkFormat format, VkIm
 	return imageView;
 }
 
+VkShaderModule VulkanRenderer::createShaderModule(const std::vector<char>& code)
+{
+	// 这个结构体告诉 Vulkan：SPIR-V 在内存的什么位置，以及共有多少字节。
+	VkShaderModuleCreateInfo createInfo{};
+	createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+	// codeSize 的单位是字节，因此直接使用 vector<char>::size()。
+	createInfo.codeSize = code.size();
+	// readFile() 得到的是 char*，而 Vulkan 按 32 位字读取 SPIR-V，需要把指针解释成 uint32_t*。
+	// reinterpret_cast 只改变“如何看待这段内存”，不会转换或复制其中的数据。
+	createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
+
+	// Vulkan 成功后会把新建的 Shader Module 句柄写入这个变量。
+	VkShaderModule shaderModule;
+	if (vkCreateShaderModule(mainDevices.logicalDevice, &createInfo, nullptr, &shaderModule) != VK_SUCCESS) {
+		throw std::runtime_error("Failed to create shader module!");
+	}
+
+	// 返回的是 Vulkan 对象句柄，不是 SPIR-V 数据的副本。
+	return shaderModule;
+}
+
 int VulkanRenderer::init(GLFWwindow* newWindow)
 {
 	this->window = newWindow;
@@ -486,6 +808,9 @@ int VulkanRenderer::init(GLFWwindow* newWindow)
 		createLogicalDevice();
 		// 逻辑设备就绪后才能创建交换链；函数内部还会获取图像并逐张创建图像视图。
 		createSwapChain();
+		createRenderPass();
+		// 图形管线依赖逻辑设备和交换链格式；当前阶段先读取着色器并配置两个着色器阶段。
+		createGraphicsPipeline();
 
 	}
 	catch (const std::runtime_error& e) {
@@ -499,6 +824,9 @@ int VulkanRenderer::init(GLFWwindow* newWindow)
 
 void VulkanRenderer::cleanup()
 {
+	vkDestroyPipeline(mainDevices.logicalDevice, graphicsPipeline, nullptr);
+	vkDestroyPipelineLayout(mainDevices.logicalDevice, pipelineLayout, nullptr);
+	vkDestroyRenderPass(mainDevices.logicalDevice, renderPass, nullptr);
 	if (mainDevices.logicalDevice != VK_NULL_HANDLE) {
 		// 先销毁引用图像的视图，再销毁提供这些图像的交换链。
 		for (const auto& image : SwapChainImages) {

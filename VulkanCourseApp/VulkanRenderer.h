@@ -10,6 +10,7 @@
 #include <iostream>
 #include <algorithm>
 #include <limits>
+#include <array>
 #include "Utilities.h"
 
 class VulkanRenderer
@@ -34,6 +35,14 @@ private:
 	VkSwapchainKHR swapchain = VK_NULL_HANDLE;   // 管理一组轮流用于呈现的图像。
 	std::vector<SwapchainImage> SwapChainImages;
 
+	// - Pipeline
+	// Pipeline Layout 规定着色器能访问哪些描述符和推送常量；当前两者都没有，所以它是“空布局”。
+	VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+	// Render Pass 描述一次渲染如何使用颜色附件，以及附件开始、结束时应处于什么状态。
+	VkRenderPass renderPass = VK_NULL_HANDLE;
+	// 图形管线把着色器和顶点输入、光栅化、混色等固定状态组合成一个可绑定对象。
+	VkPipeline graphicsPipeline = VK_NULL_HANDLE;
+
 	// - Utility
 	VkFormat swapChainImageFormat = VK_FORMAT_UNDEFINED;
 	VkExtent2D swapChainExtent{};
@@ -44,6 +53,10 @@ private:
 	void createLogicalDevice();
 	void createSurface();
 	void createSwapChain();
+	// 描述交换链图像在一次渲染中的用途、布局变化和子通道关系。
+	void createRenderPass();
+	// 读取编译后的着色器，并逐步组装固定的图形管线状态。
+	void createGraphicsPipeline();
 	// - Get
 	void getPhysicalDevice();
 
@@ -62,6 +75,8 @@ private:
 
 	// -- Create
 	VkImageView createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags);
+	// 把内存中的 SPIR-V 字节包装成逻辑设备可使用的 Shader Module。
+	VkShaderModule createShaderModule(const std::vector<char>& code);
 
 public:
 	VulkanRenderer();
