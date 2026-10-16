@@ -12,6 +12,7 @@
 #include <limits>
 #include <array>
 #include "Utilities.h"
+#include "Mesh.h"
 
 class VulkanRenderer
 {
@@ -20,8 +21,11 @@ private:
 
 	int currentFrame = 0; // 当前使用第几组帧同步对象；只在 0 到 MAX_FRAME_DRAWS - 1 之间循环。
 
-	VkInstance instance = VK_NULL_HANDLE; // Vulkan 入口；通过它枚举 GPU、创建窗口 Surface。
+	// 场景对象
+	std::vector<Mesh> meshList; // 保存场景中所有 Mesh 对象；每个 Mesh 都有自己的顶点缓冲区和索引缓冲区。
 
+	// Vulkan 对象
+	VkInstance instance = VK_NULL_HANDLE; // Vulkan 入口；通过它枚举 GPU、创建窗口 Surface。
 	struct {
 		VkPhysicalDevice physicalDevice = VK_NULL_HANDLE; // 选中的 GPU 句柄；它由 Vulkan 枚举出来。
 		VkDevice logicalDevice = VK_NULL_HANDLE;           // 操作该 GPU 的接口；用于创建资源和取得队列。

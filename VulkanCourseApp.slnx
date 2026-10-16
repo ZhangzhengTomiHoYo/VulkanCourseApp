@@ -3,5 +3,5 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="VulkanCourseApp/VulkanCourseApp.vcxproj" />
+  <Project Path="VulkanCourseApp/VulkanCourseApp.vcxproj" Id="cf013ace-c3af-44ab-bb16-17a5a62f30e1" />
 </Solution>

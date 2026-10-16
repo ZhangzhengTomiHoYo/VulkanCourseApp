@@ -10,6 +10,13 @@ VulkanRenderer::~VulkanRenderer()
 
 void VulkanRenderer::createInstance()
 {
+	// ###############################################################################
+	// # 实例模块总流程                                                              #
+	// #                                                                             #
+	// # 1. 填写应用信息                                                             #
+	// # 2. 收集并检查所需扩展                                                       #
+	// # 3. 创建 VkInstance                                                          #
+	// ###############################################################################
 	// 应用程序本身的信息
 	// 大部分数据不会影响程序 并且 只是为了开发者方便
 	VkApplicationInfo appInfo{};
@@ -65,6 +72,14 @@ void VulkanRenderer::createInstance()
 
 void VulkanRenderer::createLogicalDevice()
 {
+	// ###############################################################################
+	// # 逻辑设备模块总流程                                                          #
+	// #                                                                             #
+	// # 1. 确定所需队列族                                                           #
+	// # 2. 填写设备与队列申请                                                       #
+	// # 3. 创建 VkDevice                                                            #
+	// # 4. 取得 VkQueue 句柄                                                        #
+	// ###############################################################################
 	// 获取所选物理设备的队列族索引
 	QueueFamilyIndices indices = getQueueFamilies(mainDevices.physicalDevice);
 
@@ -131,6 +146,12 @@ void VulkanRenderer::createLogicalDevice()
 
 void VulkanRenderer::createSurface()
 {
+	// ###############################################################################
+	// # Surface 模块总流程                                                          #
+	// #                                                                             #
+	// # 1. 把 GLFW 窗口与 Vulkan 实例连接                                           #
+	// # 2. 得到可供交换链呈现的 Surface                                             #
+	// ###############################################################################
 	VkResult result = glfwCreateWindowSurface(instance, window, nullptr, &surface);
 	if (result != VK_SUCCESS) {
 		throw std::runtime_error("Failed to create window surface!");
@@ -140,6 +161,15 @@ void VulkanRenderer::createSurface()
 
 void VulkanRenderer::createSwapChain()
 {
+	// ###############################################################################
+	// # 交换链模块总流程                                                            #
+	// #                                                                             #
+	// # 1. 查询 GPU 与 Surface 支持的配置                                           #
+	// # 2. 选择交换链参数                                                           #
+	// # 3. 创建交换链                                                               #
+	// # 4. 取得交换链图像                                                           #
+	// # 5. 为每张图像创建 ImageView                                                 #
+	// ###############################################################################
 	SwapChainDetails swapChainDetails = getSwapChainDetails(mainDevices.physicalDevice);
 	// 查询的是“这块 GPU + 这个窗口表面”支持的配置，接下来从中选择交换链参数。
 
@@ -228,6 +258,14 @@ void VulkanRenderer::createSwapChain()
 
 void VulkanRenderer::createRenderPass()
 {
+	// ###############################################################################
+	// # RenderPass 模块总流程                                                       #
+	// #                                                                             #
+	// # 1. 描述附件                                                                 #
+	// # 2. 指定 Subpass 如何使用附件                                                #
+	// # 3. 设置 Subpass 依赖                                                        #
+	// # 4. 创建 RenderPass                                                          #
+	// ###############################################################################
 	// Attachment（附件）可以理解为“一次渲染要读写的图像槽位”。
 	// 这里暂时只有一个颜色附件，真正放进该槽位的会是某张交换链图像的 Image View。
 	VkAttachmentDescription colorAttachment{};
@@ -326,6 +364,14 @@ void VulkanRenderer::createRenderPass()
 
 void VulkanRenderer::createGraphicsPipeline()
 {
+	// ###############################################################################
+	// # 图形管线模块总流程                                                          #
+	// #                                                                             #
+	// # 1. 读取并包装着色器                                                         #
+	// # 2. 描述各管线阶段与固定功能                                                 #
+	// # 3. 创建管线布局                                                             #
+	// # 4. 创建图形管线                                                             #
+	// ###############################################################################
 	// 这里读取的不是 .vert/.frag GLSL 源码，而是 glslangValidator 编译出的 SPIR-V 二进制。
 	// Vulkan 驱动接收 SPIR-V，这样不同显卡驱动不必各自解析一套高级着色器语言。
 	auto vertexShaderCode = readFile("Shaders/shader.vert.spv");
@@ -357,18 +403,42 @@ void VulkanRenderer::createGraphicsPipeline()
 	// 目前只有顶点和片段两个可编程阶段；后面调用 vkCreateGraphicsPipelines() 时会用到它。
 	VkPipelineShaderStageCreateInfo shaderStages[] = { vertexShaderStageInfo, fragmentShaderStageInfo };
 
+	// binding 描述如何在一串连续的 Vertex 数据中，从一个顶点移动到下一个顶点。
+	VkVertexInputBindingDescription bindingDescription{};
+	// 使用编号 0 的顶点数据流；录制命令时也会把 Buffer 绑定到 binding 0。
+	bindingDescription.binding = 0;
+	// 每读取 sizeof(Vertex) 个字节，就到达下一个顶点。
+	bindingDescription.stride = sizeof(Vertex);
+	// 每处理一个顶点就前进一次；若为 INSTANCE，则每处理一个实例才前进一次。
+	bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+	// 一个 Vertex 包含 position 和 color 两个属性，因此需要两份属性描述。
+	std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions{};
+	// location 0 从 binding 0 中读取 Vertex::pos。
+	attributeDescriptions[0].binding = 0;
+	attributeDescriptions[0].location = 0;
+	// glm::vec3 由三个 32 位浮点数组成，与着色器中的 vec3 匹配。
+	attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+	// offsetof() 给出 pos 相对于 Vertex 起始地址的字节偏移。
+	attributeDescriptions[0].offset = offsetof(Vertex, pos);
+
+	// location 1 同样从 binding 0 中读取，但从 Vertex::col 的位置开始。
+	attributeDescriptions[1].binding = 0;
+	attributeDescriptions[1].location = 1;
+	attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+	attributeDescriptions[1].offset = offsetof(Vertex, col);
+
 	// -- Vertex Input（顶点输入）--
 	// 这个阶段描述“如何从顶点缓冲区读取每个顶点的数据”。
-	// 当前顶点位置和颜色直接写在 shader.vert 数组中，并通过 gl_VertexIndex 读取，
-	// 所以暂时没有顶点缓冲区，也就不需要绑定描述和属性描述。
+	// binding 负责说明每个 Vertex 的间隔，attribute 负责说明 Vertex 内各成员的位置和格式。
 	VkPipelineVertexInputStateCreateInfo vertexInputCreateInfo{};
 	vertexInputCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-	// binding 描述一整条顶点数据流，例如每个顶点占多少字节、按顶点还是按实例前进。
-	vertexInputCreateInfo.vertexBindingDescriptionCount = 0;
-	vertexInputCreateInfo.pVertexBindingDescriptions = nullptr;
-	// attribute 描述数据流中各属性的位置和格式，例如 position 是 vec3、color 是 vec3。
-	vertexInputCreateInfo.vertexAttributeDescriptionCount = 0;
-	vertexInputCreateInfo.pVertexAttributeDescriptions = nullptr;
+	// 当前只有编号 0 这一条顶点数据流。
+	vertexInputCreateInfo.vertexBindingDescriptionCount = 1;
+	vertexInputCreateInfo.pVertexBindingDescriptions = &bindingDescription;
+	// 数量必须包含 position 和 color 两项；少填会导致着色器对应 location 读不到属性。
+	vertexInputCreateInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+	vertexInputCreateInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
 
 	// -- Input Assembly（输入装配）--
 	// 输入装配决定怎样把顶点组合成“图元”。图元可以是点、线或三角形。
@@ -523,6 +593,13 @@ void VulkanRenderer::createGraphicsPipeline()
 
 void VulkanRenderer::createFramebuffers()
 {
+	// ###############################################################################
+	// # Framebuffer 模块总流程                                                      #
+	// #                                                                             #
+	// # 1. 遍历每张交换链图像                                                       #
+	// # 2. 把 ImageView 填入 RenderPass 声明的颜色附件位置                          #
+	// # 3. 创建对应的 Framebuffer                                                   #
+	// ###############################################################################
 	// 交换链有几张图像，就创建几个 Framebuffer。
 	// resize() 不仅修改数量，也提前创建好对应数量的空 VkFramebuffer 句柄槽位。
 	swapchainFramebuffers.resize(SwapChainImages.size());
@@ -563,6 +640,12 @@ void VulkanRenderer::createFramebuffers()
 
 void VulkanRenderer::createCommandPool()
 {
+	// ###############################################################################
+	// # Command Pool 模块总流程                                                     #
+	// #                                                                             #
+	// # 1. 找到图形队列族                                                           #
+	// # 2. 为该队列族创建管理 Command Buffer 内存的 Pool                            #
+	// ###############################################################################
 	// Command Buffer 最终要提交给 graphicsQueue，而 Command Pool 必须属于同一个队列族。
 	// 因此先重新取得图形队列族编号。
 	QueueFamilyIndices queueFamilyIndices = getQueueFamilies(mainDevices.physicalDevice);
@@ -584,6 +667,13 @@ void VulkanRenderer::createCommandPool()
 
 void VulkanRenderer::createCommandBuffers()
 {
+	// ###############################################################################
+	// # Command Buffer 分配总流程                                                   #
+	// #                                                                             #
+	// # 1. 确定 Command Buffer 数量                                                 #
+	// # 2. 指定来源 Pool 和级别                                                     #
+	// # 3. 批量取得 Command Buffer 句柄                                             #
+	// ###############################################################################
 	// 为每个 Framebuffer 准备一份 Command Buffer。
 	// 下标继续保持对应：commandBuffers[i] 会向 swapchainFramebuffers[i] 录制绘图命令。
 	commandBuffers.resize(swapchainFramebuffers.size());
@@ -609,6 +699,16 @@ void VulkanRenderer::createCommandBuffers()
 
 void VulkanRenderer::recordCommands()
 {
+	// ###############################################################################
+	// # 命令录制总流程                                                              #
+	// #                                                                             #
+	// # 1. 开始 Command Buffer                                                      #
+	// # 2. 开始 RenderPass                                                          #
+	// # 3. 绑定图形管线、顶点 Buffer 和索引 Buffer                                  #
+	// # 4. 为每个 Mesh 发出 vkCmdDrawIndexed()                                      #
+	// # 5. 结束 RenderPass                                                          #
+	// # 6. 结束 Command Buffer                                                      #
+	// ###############################################################################
 	// Command Buffer 可以理解为交给 GPU 的“操作清单”。
 	// 这里做的是录制，不会立即执行；以后把它提交给 graphicsQueue 才真正运行。
 	VkCommandBufferBeginInfo commandBufferBeginInfo{};
@@ -639,10 +739,10 @@ void VulkanRenderer::recordCommands()
 
 	// 每个 Command Buffer 都绑定同下标的 Framebuffer；绘制规则相同，最终写入的交换链图像不同。
 	for (size_t i = 0; i < commandBuffers.size(); ++i) {
-		// 第 i 份命令将 RenderPass 的附件槽位绑定到第 i 个 Framebuffer 中的 ImageView。
+		// 每份 Command Buffer 对应一个 Framebuffer；二者使用相同的交换链图像编号。
 		renderPassBeginInfo.framebuffer = swapchainFramebuffers[i];
 
-		// 进入录制状态；从这里开始的 vkCmd* 调用会依次写进 commandBuffers[i]。
+		// 进入录制状态；后面的全部 vkCmd* 都必须写入这一份正在录制的 Command Buffer。
 		VkResult result = vkBeginCommandBuffer(commandBuffers[i], &commandBufferBeginInfo);
 		if (result != VK_SUCCESS) {
 			throw std::runtime_error("Failed to begin command buffer!");
@@ -653,11 +753,22 @@ void VulkanRenderer::recordCommands()
 
 		// 指定后续 Draw 使用哪条图形管线；Bind Point 必须与 Subpass 的 GRAPHICS 类型一致。
 		vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
-
-		// 录制一次非索引绘制：
-		// 3 = 每个实例绘制 3 个顶点；1 = 只绘制 1 个实例；两个 0 分别表示从顶点 0、实例 0 开始。
-		// 顶点着色器会收到 gl_VertexIndex = 0、1、2，从写死的数组中取出三角形顶点。
-		vkCmdDraw(commandBuffers[i], 3, 1, 0, 0);
+		// 一份 Command Buffer 可以依次绘制多个 Mesh；meshIndex 只负责选择 Mesh，
+		// 不能拿它访问 commandBuffers，否则会把命令写进未开始录制的对象。
+		for (size_t meshIndex = 0; meshIndex < meshList.size(); ++meshIndex) {
+			// 当前 Mesh 只有一条顶点数据流，因此这里只绑定一个顶点 Buffer。
+			VkBuffer vertexBuffers[] = { meshList[meshIndex].getVertexBuffer() };
+			// 从 Buffer 的第 0 字节开始读取第一个 Vertex。
+			VkDeviceSize offsets[] = { 0 };
+			// 参数中的 firstBinding = 0，与管线创建时 bindingDescription.binding = 0 对应。
+			// 后续 Draw 执行时，顶点输入阶段会按 stride 和 attribute 描述读取这段 Buffer。
+			vkCmdBindVertexBuffers(commandBuffers[i], 0, 1, vertexBuffers, offsets);
+			// 索引 Buffer 中的每个 uint32_t 都是一个顶点编号。
+			vkCmdBindIndexBuffer(commandBuffers[i], meshList[meshIndex].getIndexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+			// 录制一次索引绘制：读取当前 Mesh 的全部索引，只绘制一个实例，
+			// 并从索引 0、顶点偏移 0、实例 0 开始。
+			vkCmdDrawIndexed(commandBuffers[i], meshList[meshIndex].getIndexCount(), 1, 0, 0, 0);
+		}
 
 		// 结束 RenderPass；Vulkan 会按 RenderPass 描述保存颜色并把图像转为最终布局。
 		vkCmdEndRenderPass(commandBuffers[i]);
@@ -671,6 +782,14 @@ void VulkanRenderer::recordCommands()
 
 void VulkanRenderer::createSynchronization()
 {
+	// ###############################################################################
+	// # 同步模块总流程                                                              #
+	// #                                                                             #
+	// # 1. 准备同步对象数组                                                         #
+	// # 2. 创建供 CPU 等待的 Fence                                                  #
+	// # 3. 创建“图像可用”Semaphore                                                #
+	// # 4. 创建“绘制完成”Semaphore                                                #
+	// ###############################################################################
 	// 程序用 currentFrame 在多组同步对象之间循环，避免上一帧尚未执行完成就复用同一组对象。
 	// 因此下面两类对象的数量都等于 MAX_FRAME_DRAWS。
 	// imageAvailable：通知图形队列“本次取得的交换链图像已经可以写入”。
@@ -715,6 +834,13 @@ void VulkanRenderer::createSynchronization()
 
 void VulkanRenderer::getPhysicalDevice()
 {
+	// ###############################################################################
+	// # 物理设备模块总流程                                                          #
+	// #                                                                             #
+	// # 1. 枚举 GPU                                                                 #
+	// # 2. 逐个检查队列、扩展和交换链支持                                           #
+	// # 3. 保存第一块满足要求的 GPU                                                 #
+	// ###############################################################################
 	mainDevices.physicalDevice = VK_NULL_HANDLE;
 	// 枚举实例可以访问的物理设备
 	uint32_t deviceCount = 0;
@@ -997,20 +1123,68 @@ int VulkanRenderer::init(GLFWwindow* newWindow)
 	this->window = newWindow;
 
 	try {
+		// ###############################################################################
+		// # 渲染器初始化总流程                                                          #
+		// #                                                                             #
+		// # 1. 建立 Vulkan 基础对象                                                     #
+		// # 2. 创建顶点资源                                                             #
+		// # 3. 建立呈现目标与图形管线                                                   #
+		// # 4. 准备并录制绘图命令                                                       #
+		// # 5. 创建运行时同步对象                                                       #
+		// ###############################################################################
+
+		// 初始化第 1 步：建立基础对象，并创建上传顶点时所需的 Command Pool。
 		createInstance();
 		createSurface();
 		getPhysicalDevice();
 		createLogicalDevice();
+		// Mesh::copyBuffer() 需要从该 Pool 分配临时 Command Buffer，
+		// 所以必须在创建 Mesh 之前先创建 Command Pool。
+		createCommandPool();
+
+		// 初始化第 2 步：在 CPU 端准备两个 Mesh 的顶点和索引，再上传到设备本地显存。
+		// 每个 Vertex 同时包含位置和颜色；两个数组分别描述左、右两个矩形的四个顶点。
+		std::vector<Vertex> meshVertices1 = {
+			{{0.0, -0.4, 0.0}, {1.0f, 0.0f, 0.0f}},
+			{{0.0, 0.4, 0.0}, {0.0f, 1.0f, 0.0f}},
+			{{-0.9, 0.4, 0.0}, {0.0f, 0.0f, 1.0f}},
+			{{-0.9, -0.4, 0.0}, {1.0f, 0.0f, 0.0f}}
+		};
+
+		std::vector<Vertex> meshVertices2 = {
+			{{0.9, -0.4, 0.0}, {1.0f, 0.0f, 0.0f}},
+			{{0.9, 0.4, 0.0}, {0.0f, 1.0f, 0.0f}},
+			{{0.1, 0.4, 0.0}, {0.0f, 0.0f, 1.0f}},
+			{{0.1, -0.4, 0.0}, {1.0f, 0.0f, 0.0f}}
+		};
+
+		std::vector<uint32_t> meshIndices = {
+			// 索引存的是顶点数组下标。前 3 个索引组成第一个三角形，后 3 个组成第二个三角形。
+			// 下标 0、2 会被两个三角形复用，因此矩形只需要保存 4 份 Vertex，而不是重复保存 6 份。
+			0, 1, 2,
+			2, 3, 0
+		};
+
+		// 两个 Mesh 使用不同的顶点数组，但可以使用相同的索引排列方式。
+		// 构造函数会分别为每个 Mesh 创建顶点 Buffer 和索引 Buffer，并上传到 NVIDIA 显存。
+		Mesh mesh1 = Mesh(mainDevices.physicalDevice, mainDevices.logicalDevice, graphicsQueue, graphicsCommandPool, &meshVertices1, &meshIndices);
+		Mesh mesh2 = Mesh(mainDevices.physicalDevice, mainDevices.logicalDevice, graphicsQueue, graphicsCommandPool, &meshVertices2, &meshIndices);
+
+		// Renderer 通过 meshList 统一保存需要绘制的 Mesh；录制命令时会依次遍历它们。
+		meshList = { mesh1, mesh2 };
+
+
+		// 初始化第 3 步：建立从交换链图像到 RenderPass、Framebuffer 和图形管线的渲染目标。
 		// 逻辑设备就绪后才能创建交换链；函数内部还会获取图像并逐张创建图像视图。
 		createSwapChain();
 		createRenderPass();
 		// 图形管线依赖逻辑设备和交换链格式；当前阶段先读取着色器并配置两个着色器阶段。
 		createGraphicsPipeline();
 		createFramebuffers();
-		// Command Pool 提供内存，Command Buffer 从中分配，最后再把实际绘图步骤录进去。
-		createCommandPool();
+		// 初始化第 4 步：从已有的 Command Pool 分配绘图 Command Buffer，再录入实际绘图步骤。
 		createCommandBuffers();
 		recordCommands();
+		// 初始化第 5 步：创建绘制循环用于协调 CPU、图形队列和呈现队列的同步对象。
 		createSynchronization();
 	}
 	catch (const std::runtime_error& e) {
@@ -1024,6 +1198,17 @@ int VulkanRenderer::init(GLFWwindow* newWindow)
 
 void VulkanRenderer::draw()
 {
+	// ###############################################################################
+	// # 单次 draw() 总流程                                                          #
+	// #                                                                             #
+	// # 1. 等待本组旧任务完成                                                       #
+	// # 2. 取得一张交换链图像                                                       #
+	// # 3. 向图形队列提交绘制                                                       #
+	// # 4. 向呈现队列提交图像                                                       #
+	// # 5. 更新 currentFrame                                                        #
+	// ###############################################################################
+
+	// 绘制第 1 步：确认 CPU 可以安全复用 currentFrame 对应的 Fence 和“图像可用”Semaphore。
 	// currentFrame 表示程序当前使用第几组 imageAvailableSemaphore 和 drawFence。
 	// CPU 在复用这组对象前，先等待它上一次对应的绘制提交执行完成。
 	// VK_TRUE 表示等待传入的全部 Fence；这里只有一个。
@@ -1032,6 +1217,7 @@ void VulkanRenderer::draw()
 	// 等待成功后，将 Fence 恢复为“未触发”，供本次 vkQueueSubmit() 记录完成状态。
 	vkResetFences(mainDevices.logicalDevice, 1, &drawFences[currentFrame]);
 
+	// 绘制第 2 步：向交换链取得一张当前可用于绘制的图像。
 	// imageIndex 与 currentFrame 含义不同：它是交换链这次提供的图像编号。
 	uint32_t imageIndex;
 	// 请求取得一张可以写入的交换链图像：
@@ -1041,7 +1227,7 @@ void VulkanRenderer::draw()
 	// - imageIndex：接收实际取得的交换链图像编号。
 	vkAcquireNextImageKHR(mainDevices.logicalDevice, swapchain, std::numeric_limits<uint64_t>::max(), imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
 
-	// 描述准备提交给 graphicsQueue 的一帧绘制任务。
+	// 绘制第 3 步：描述绘制任务，并提交给 graphicsQueue 执行。
 	VkSubmitInfo submitInfo{};
 	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 	// 本次提交需要等待一个信号量。
@@ -1068,7 +1254,7 @@ void VulkanRenderer::draw()
 		throw std::runtime_error("Failed to submit draw command buffer!");
 	}
 
-	// 描述准备提交给 presentationQueue 的呈现操作。
+	// 绘制第 4 步：绘制完成后，把对应的交换链图像提交给 presentationQueue。
 	VkPresentInfoKHR presentInfo{};
 	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 	// 呈现前需要等待一个“绘制完成”信号量，避免显示尚未画完的图像。
@@ -1086,14 +1272,32 @@ void VulkanRenderer::draw()
 		throw std::runtime_error("Failed to present swap chain image!");
 	}
 
-	// 切换到下一组帧同步对象。取模使编号在 0 和 MAX_FRAME_DRAWS - 1 之间循环。
+	// 绘制第 5 步：切换下一次 draw() 使用的同步对象组。
+	// 取模使编号在 0 和 MAX_FRAME_DRAWS - 1 之间循环。
 	// currentFrame 的变化不代表下一次会取得哪张交换链图像；图像编号仍由 Vulkan 返回。
 	currentFrame = (currentFrame + 1) % MAX_FRAME_DRAWS;
 }
 
 void VulkanRenderer::cleanup()
 {
+	// ###############################################################################
+	// # 清理总流程                                                                  #
+	// #                                                                             #
+	// # 1. 等待 GPU 停止使用资源                                                    #
+	// # 2. 释放顶点资源与同步对象                                                   #
+	// # 3. 释放命令资源                                                             #
+	// # 4. 销毁 Framebuffer、管线和 RenderPass                                      #
+	// # 5. 销毁 ImageView 和交换链                                                  #
+	// # 6. 销毁逻辑设备                                                             #
+	// # 7. 销毁 Surface 和实例                                                      #
+	// ###############################################################################
 	vkDeviceWaitIdle(mainDevices.logicalDevice);
+
+	// 顶点 Buffer 和它绑定的显存都是逻辑设备的子对象，必须先于 vkDestroyDevice() 释放。
+	for (size_t i = 0; i < meshList.size(); i++)
+	{
+		meshList[i].destroyBuffers();
+	}
 
 	// renderFinished 的数量等于交换链图像数，要单独全部销毁。
 	for (VkSemaphore semaphore : renderFinishedSemaphores) {
