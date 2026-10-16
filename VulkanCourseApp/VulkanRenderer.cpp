@@ -124,6 +124,9 @@ void VulkanRenderer::createLogicalDevice()
 	// 每个队列族只申请了一条队列，所以族内的队列索引是 0。
 	// 如果绘图族和呈现族编号相同，这两个成员保存的就是同一个队列句柄。
 	vkGetDeviceQueue(mainDevices.logicalDevice, indices.graphicsFamily, 0, &graphicsQueue);
+	// presentationQueue 必须从支持当前 Surface 呈现的队列族中取得。
+	// 前面在 VkDeviceQueueCreateInfo 中申请队列，并不会自动给这个成员变量赋值。
+	vkGetDeviceQueue(mainDevices.logicalDevice, indices.presentationFamily, 0, &presentationQueue);
 }
 
 void VulkanRenderer::createSurface()
@@ -518,6 +521,198 @@ void VulkanRenderer::createGraphicsPipeline()
 	vkDestroyShaderModule(mainDevices.logicalDevice, verteShaderModule, nullptr);
 }
 
+void VulkanRenderer::createFramebuffers()
+{
+	// 交换链有几张图像，就创建几个 Framebuffer。
+	// resize() 不仅修改数量，也提前创建好对应数量的空 VkFramebuffer 句柄槽位。
+	swapchainFramebuffers.resize(SwapChainImages.size());
+
+	// i 同时表示交换链图像编号和 Framebuffer 编号，二者保持一一对应。
+	for (size_t i = 0; i < swapchainFramebuffers.size(); ++i) {
+		// attachments 是“这个 Framebuffer 实际绑定了哪些 ImageView”的数组。
+		// 当前 RenderPass 只有一个颜色附件，所以数组中也只有一个 ImageView。
+		// 第 i 个 Framebuffer 绑定第 i 张交换链图像的视图。
+		std::array<VkImageView, 1> attachments = {
+			SwapChainImages[i].imageView
+		};
+
+		// Framebuffer 不保存渲染规则，它只负责把具体图像与 RenderPass 声明的附件槽位对应起来。
+		VkFramebufferCreateInfo framebufferCreateInfo{};
+		// sType 告诉 Vulkan 当前结构体是 Framebuffer 的创建信息。
+		framebufferCreateInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+		// 指定这个 Framebuffer 要与哪个 RenderPass 配合。
+		// 因此 attachments 的数量、格式和用途必须与该 RenderPass 的附件描述兼容。
+		framebufferCreateInfo.renderPass = renderPass;
+		// 告诉 Vulkan attachments 数组里共有几个 ImageView；当前只有一个颜色附件。
+		framebufferCreateInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+		// data() 返回数组第一个元素的地址，Vulkan 从这里读取全部 ImageView 句柄。
+		framebufferCreateInfo.pAttachments = attachments.data();
+		// Framebuffer 的宽度和高度必须覆盖这批交换链图像的实际尺寸。
+		framebufferCreateInfo.width = swapChainExtent.width;
+		framebufferCreateInfo.height = swapChainExtent.height;
+		// layers 表示 Framebuffer 包含多少个图像数组层；普通二维窗口图像只有一层。
+		framebufferCreateInfo.layers = 1;
+
+		// 创建出的句柄直接写入 vector 的第 i 个位置，保持与交换链图像下标一致。
+		VkResult result = vkCreateFramebuffer(mainDevices.logicalDevice, &framebufferCreateInfo, nullptr, &swapchainFramebuffers[i]);
+		if (result != VK_SUCCESS) {
+			throw std::runtime_error("Failed to create a Framebuffer!");
+		}
+	}
+}
+
+void VulkanRenderer::createCommandPool()
+{
+	// Command Buffer 最终要提交给 graphicsQueue，而 Command Pool 必须属于同一个队列族。
+	// 因此先重新取得图形队列族编号。
+	QueueFamilyIndices queueFamilyIndices = getQueueFamilies(mainDevices.physicalDevice);
+
+	// Command Pool 是 Command Buffer 的内存管理者；它本身不保存绘图内容。
+	VkCommandPoolCreateInfo commandPoolCreateInfo{};
+	// 指明当前结构体是 Command Pool 创建信息。
+	commandPoolCreateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+	// 从这个 Pool 分配的 Command Buffer 只能提交给属于该队列族的队列。
+	commandPoolCreateInfo.queueFamilyIndex = queueFamilyIndices.graphicsFamily;
+	// flags 保持默认值 0：当前不要求单独重置某一个 Command Buffer，也不提供短生命周期提示。
+
+	// 创建成功后，把 Command Pool 句柄保存到 graphicsCommandPool。
+	VkResult result = vkCreateCommandPool(mainDevices.logicalDevice, &commandPoolCreateInfo, nullptr, &graphicsCommandPool);
+	if (result != VK_SUCCESS) {
+		throw std::runtime_error("Failed to create command pool!");
+	}
+}
+
+void VulkanRenderer::createCommandBuffers()
+{
+	// 为每个 Framebuffer 准备一份 Command Buffer。
+	// 下标继续保持对应：commandBuffers[i] 会向 swapchainFramebuffers[i] 录制绘图命令。
+	commandBuffers.resize(swapchainFramebuffers.size());
+
+	// 这里是“批量分配命令缓冲区”的申请信息。
+	VkCommandBufferAllocateInfo commandBufferAllocateInfo{};
+	// 指明当前结构体是 Command Buffer 分配信息。
+	commandBufferAllocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	// 指定由哪个 Pool 提供这些 Command Buffer 的内存。
+	commandBufferAllocateInfo.commandPool = graphicsCommandPool;
+	// PRIMARY 可以直接提交给 Queue，也可以直接包含 RenderPass 和 Draw 等命令。
+	// SECONDARY 通常由 PRIMARY 调用，不能像这里一样单独完成整套提交。
+	commandBufferAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	// 分配数量与 vector 大小一致，也就是每个 Framebuffer 一份。
+	commandBufferAllocateInfo.commandBufferCount = static_cast<uint32_t>(commandBuffers.size());
+
+	// data() 提供 vector 首地址，Vulkan 会依次把创建出的句柄写入其中。
+	VkResult result = vkAllocateCommandBuffers(mainDevices.logicalDevice, &commandBufferAllocateInfo, commandBuffers.data());
+	if (result != VK_SUCCESS) {
+		throw std::runtime_error("Failed to allocate command buffers!");
+	}
+}
+
+void VulkanRenderer::recordCommands()
+{
+	// Command Buffer 可以理解为交给 GPU 的“操作清单”。
+	// 这里做的是录制，不会立即执行；以后把它提交给 graphicsQueue 才真正运行。
+	VkCommandBufferBeginInfo commandBufferBeginInfo{};
+	// 指明当前结构体用于开始录制 Command Buffer。
+	commandBufferBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+
+	// 下面的信息规定录制 vkCmdBeginRenderPass 时要使用哪个 RenderPass、哪块区域以及如何清屏。
+	VkRenderPassBeginInfo renderPassBeginInfo{};
+	// 指明当前结构体用于开始 RenderPass。
+	renderPassBeginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+	// 使用之前创建的 RenderPass 规则；具体 Framebuffer 会在循环里按下标填写。
+	renderPassBeginInfo.renderPass = renderPass;
+	// 渲染区域从 Framebuffer 左上角 (0, 0) 开始。
+	renderPassBeginInfo.renderArea.offset = { 0, 0 };
+	// 渲染区域覆盖整张交换链图像。
+	renderPassBeginInfo.renderArea.extent = swapChainExtent;
+
+	// RenderPass 的颜色附件使用 LOAD_OP_CLEAR，因此开始时需要提供清除颜色。
+	// 四个分量依次是 R、G、B、A，取值范围通常为 0.0 到 1.0。
+	VkClearValue clearValues[] = {
+		{0.6f, 0.65f, 0.4f, 1.0f}
+	};
+	// pClearValues 指向清除值数组；数组下标与 RenderPass 中附件的下标对应。
+	renderPassBeginInfo.pClearValues = clearValues;
+	// 当前只有一个颜色附件，所以只提供一个清除值。
+	renderPassBeginInfo.clearValueCount = 1;
+
+	// 每个 Command Buffer 都绑定同下标的 Framebuffer；绘制规则相同，最终写入的交换链图像不同。
+	for (size_t i = 0; i < commandBuffers.size(); ++i) {
+		// 第 i 份命令将 RenderPass 的附件槽位绑定到第 i 个 Framebuffer 中的 ImageView。
+		renderPassBeginInfo.framebuffer = swapchainFramebuffers[i];
+
+		// 进入录制状态；从这里开始的 vkCmd* 调用会依次写进 commandBuffers[i]。
+		VkResult result = vkBeginCommandBuffer(commandBuffers[i], &commandBufferBeginInfo);
+		if (result != VK_SUCCESS) {
+			throw std::runtime_error("Failed to begin command buffer!");
+		}
+
+		// 开始一次 RenderPass。INLINE 表示 Subpass 的命令直接写在当前 PRIMARY Command Buffer 中。
+		vkCmdBeginRenderPass(commandBuffers[i], &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+		// 指定后续 Draw 使用哪条图形管线；Bind Point 必须与 Subpass 的 GRAPHICS 类型一致。
+		vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+
+		// 录制一次非索引绘制：
+		// 3 = 每个实例绘制 3 个顶点；1 = 只绘制 1 个实例；两个 0 分别表示从顶点 0、实例 0 开始。
+		// 顶点着色器会收到 gl_VertexIndex = 0、1、2，从写死的数组中取出三角形顶点。
+		vkCmdDraw(commandBuffers[i], 3, 1, 0, 0);
+
+		// 结束 RenderPass；Vulkan 会按 RenderPass 描述保存颜色并把图像转为最终布局。
+		vkCmdEndRenderPass(commandBuffers[i]);
+		// 结束整份 Command Buffer 的录制，使它可以在之后提交给 Queue。
+		result = vkEndCommandBuffer(commandBuffers[i]);
+		if (result != VK_SUCCESS) {
+			throw std::runtime_error("Failed to end command buffer!");
+		}
+	}
+}
+
+void VulkanRenderer::createSynchronization()
+{
+	// 程序用 currentFrame 在多组同步对象之间循环，避免上一帧尚未执行完成就复用同一组对象。
+	// 因此下面两类对象的数量都等于 MAX_FRAME_DRAWS。
+	// imageAvailable：通知图形队列“本次取得的交换链图像已经可以写入”。
+	imageAvailableSemaphores.resize(MAX_FRAME_DRAWS);
+	// drawFence：通知 CPU“currentFrame 所指的这组对象上一次对应的绘制提交已经完成”。
+	drawFences.resize(MAX_FRAME_DRAWS);
+
+	// renderFinished 会交给呈现操作等待，所以它按交换链图像编号选择，而不按 currentFrame 选择。
+	// 再次取得同一张交换链图像时，才能确定上一次呈现已经用完该图像对应的信号量。
+	renderFinishedSemaphores.resize(SwapChainImages.size());
+
+	// Semaphore 不需要额外参数；这里只需声明结构体的实际类型。
+	VkSemaphoreCreateInfo semaphoreCreateInfo{};
+	semaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+	// Fence 用于让 CPU 查询或等待图形队列中的一帧绘制任务是否完成。
+	VkFenceCreateInfo fenceCreateInfo{};
+	fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+	// Fence 初始为“已触发”，使第一帧调用 vkWaitForFences() 时可以立即通过。
+	// 之后每次使用前会重置，图形队列执行完对应提交后再把它设为“已触发”。
+	fenceCreateInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+	// 为 currentFrame 可以指向的每个编号，分别创建“图像可用”信号量和绘制完成 Fence。
+	for (size_t i = 0; i < MAX_FRAME_DRAWS; ++i) {
+		if (vkCreateSemaphore(mainDevices.logicalDevice, &semaphoreCreateInfo, nullptr, &imageAvailableSemaphores[i]) != VK_SUCCESS) {
+			throw std::runtime_error("Failed to create image available semaphore!");
+		}
+		if (vkCreateFence(mainDevices.logicalDevice, &fenceCreateInfo, nullptr, &drawFences[i]) != VK_SUCCESS) {
+			throw std::runtime_error("Failed to create draw fence!");
+		}
+	}
+
+	// 为每张交换链图像创建自己的“绘制完成”信号量。
+	// 该数组使用 vkAcquireNextImageKHR() 返回的 imageIndex 访问。
+	for (size_t i = 0; i < renderFinishedSemaphores.size(); ++i) {
+		if (vkCreateSemaphore(mainDevices.logicalDevice, &semaphoreCreateInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS) {
+			throw std::runtime_error("Failed to create render finished semaphore!");
+		}
+	}
+
+}
+
 void VulkanRenderer::getPhysicalDevice()
 {
 	mainDevices.physicalDevice = VK_NULL_HANDLE;
@@ -811,7 +1006,12 @@ int VulkanRenderer::init(GLFWwindow* newWindow)
 		createRenderPass();
 		// 图形管线依赖逻辑设备和交换链格式；当前阶段先读取着色器并配置两个着色器阶段。
 		createGraphicsPipeline();
-
+		createFramebuffers();
+		// Command Pool 提供内存，Command Buffer 从中分配，最后再把实际绘图步骤录进去。
+		createCommandPool();
+		createCommandBuffers();
+		recordCommands();
+		createSynchronization();
 	}
 	catch (const std::runtime_error& e) {
 		printf("Failed to initialize Vulkan renderer: %s\n", e.what());
@@ -822,8 +1022,97 @@ int VulkanRenderer::init(GLFWwindow* newWindow)
 	return 0;
 }
 
+void VulkanRenderer::draw()
+{
+	// currentFrame 表示程序当前使用第几组 imageAvailableSemaphore 和 drawFence。
+	// CPU 在复用这组对象前，先等待它上一次对应的绘制提交执行完成。
+	// VK_TRUE 表示等待传入的全部 Fence；这里只有一个。
+	// UINT64_MAX 表示一直等待，不设置超时时间。
+	vkWaitForFences(mainDevices.logicalDevice, 1, &drawFences[currentFrame], VK_TRUE, std::numeric_limits<uint64_t>::max());
+	// 等待成功后，将 Fence 恢复为“未触发”，供本次 vkQueueSubmit() 记录完成状态。
+	vkResetFences(mainDevices.logicalDevice, 1, &drawFences[currentFrame]);
+
+	// imageIndex 与 currentFrame 含义不同：它是交换链这次提供的图像编号。
+	uint32_t imageIndex;
+	// 请求取得一张可以写入的交换链图像：
+	// - UINT64_MAX：一直等待，直到有图像可用；
+	// - imageAvailableSemaphores[currentFrame]：取得成功后由 Vulkan 触发；
+	// - VK_NULL_HANDLE：这里用信号量接收通知，不另外使用 Fence；
+	// - imageIndex：接收实际取得的交换链图像编号。
+	vkAcquireNextImageKHR(mainDevices.logicalDevice, swapchain, std::numeric_limits<uint64_t>::max(), imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+
+	// 描述准备提交给 graphicsQueue 的一帧绘制任务。
+	VkSubmitInfo submitInfo{};
+	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	// 本次提交需要等待一个信号量。
+	submitInfo.waitSemaphoreCount = 1;
+	// 等待 currentFrame 所指的“图像可用”信号量，避免交换链图像尚未取得就开始写入。
+	submitInfo.pWaitSemaphores = &imageAvailableSemaphores[currentFrame];
+	// 只让“颜色附件输出”阶段等待交换链图像；更早且不访问该图像的阶段无需被阻塞。
+	VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+	submitInfo.pWaitDstStageMask = waitStages;
+	// 本次只提交一份 Command Buffer。
+	submitInfo.commandBufferCount = 1;
+	// 选择与本次交换链图像对应的命令；它会把绘制结果写入同下标的 Framebuffer。
+	submitInfo.pCommandBuffers = &commandBuffers[imageIndex];
+	// 这帧绘制任务执行完成后触发一个信号量。
+	submitInfo.signalSemaphoreCount = 1;
+	// 这个信号量随后交给 vkQueuePresentKHR 等待，所以它跟随交换链图像。
+	// 若按 currentFrame 复用，呈现操作尚未用完时，下一帧可能再次触发同一个信号量。
+	submitInfo.pSignalSemaphores = &renderFinishedSemaphores[imageIndex];
+
+	// 把这一帧绘制任务放入图形队列。
+	// drawFences[currentFrame] 会在该提交执行完成后变成“已触发”，供 CPU 下次复用这组对象时等待。
+	VkResult result = vkQueueSubmit(graphicsQueue, 1, &submitInfo, drawFences[currentFrame]);
+	if (result != VK_SUCCESS) {
+		throw std::runtime_error("Failed to submit draw command buffer!");
+	}
+
+	// 描述准备提交给 presentationQueue 的呈现操作。
+	VkPresentInfoKHR presentInfo{};
+	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+	// 呈现前需要等待一个“绘制完成”信号量，避免显示尚未画完的图像。
+	presentInfo.waitSemaphoreCount = 1;
+	presentInfo.pWaitSemaphores = &renderFinishedSemaphores[imageIndex];
+	// 本次只向一个交换链提交呈现请求。
+	presentInfo.swapchainCount = 1;
+	presentInfo.pSwapchains = &swapchain;
+	// 指定要呈现刚才取得并完成绘制的那张交换链图像。
+	presentInfo.pImageIndices = &imageIndex;
+
+	// 把呈现请求放入呈现队列；函数返回不等于窗口系统已经显示完这张图像。
+	result = vkQueuePresentKHR(presentationQueue, &presentInfo);
+	if (result != VK_SUCCESS) {
+		throw std::runtime_error("Failed to present swap chain image!");
+	}
+
+	// 切换到下一组帧同步对象。取模使编号在 0 和 MAX_FRAME_DRAWS - 1 之间循环。
+	// currentFrame 的变化不代表下一次会取得哪张交换链图像；图像编号仍由 Vulkan 返回。
+	currentFrame = (currentFrame + 1) % MAX_FRAME_DRAWS;
+}
+
 void VulkanRenderer::cleanup()
 {
+	vkDeviceWaitIdle(mainDevices.logicalDevice);
+
+	// renderFinished 的数量等于交换链图像数，要单独全部销毁。
+	for (VkSemaphore semaphore : renderFinishedSemaphores) {
+		vkDestroySemaphore(mainDevices.logicalDevice, semaphore, nullptr);
+	}
+
+	// imageAvailable 和 Fence 的数量等于同时处理的帧数。
+	for (size_t i = 0; i < MAX_FRAME_DRAWS; ++i) {
+		vkDestroySemaphore(mainDevices.logicalDevice, imageAvailableSemaphores[i], nullptr);
+		vkDestroyFence(mainDevices.logicalDevice, drawFences[i], nullptr);
+	}
+
+	// 销毁 Command Pool 时，由它分配的全部 Command Buffer 会一起被隐式释放，不需要逐个销毁。
+	vkDestroyCommandPool(mainDevices.logicalDevice, graphicsCommandPool, nullptr);
+	// Framebuffer 引用了交换链 ImageView 和 RenderPass，所以必须先销毁 Framebuffer，
+	// 然后才能销毁 RenderPass、ImageView 和交换链。
+	for (auto framebuffer : swapchainFramebuffers) {
+		vkDestroyFramebuffer(mainDevices.logicalDevice, framebuffer, nullptr);
+	}
 	vkDestroyPipeline(mainDevices.logicalDevice, graphicsPipeline, nullptr);
 	vkDestroyPipelineLayout(mainDevices.logicalDevice, pipelineLayout, nullptr);
 	vkDestroyRenderPass(mainDevices.logicalDevice, renderPass, nullptr);

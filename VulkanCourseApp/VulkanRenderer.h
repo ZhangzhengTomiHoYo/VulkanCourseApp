@@ -16,47 +16,56 @@
 class VulkanRenderer
 {
 private:
-	GLFWwindow* window = nullptr;
+	GLFWwindow* window = nullptr; // GLFW 窗口；创建 Surface 和查询实际像素尺寸时使用。
 
-	// 实例是使用 Vulkan 的入口：通过它枚举 GPU、创建窗口表面。
-	VkInstance instance = VK_NULL_HANDLE;
+	int currentFrame = 0; // 当前使用第几组帧同步对象；只在 0 到 MAX_FRAME_DRAWS - 1 之间循环。
+
+	VkInstance instance = VK_NULL_HANDLE; // Vulkan 入口；通过它枚举 GPU、创建窗口 Surface。
 
 	struct {
-		// 物理设备是选中的 GPU 的句柄；我们选择它，而不是创建一块显卡。
-		VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
-		// 逻辑设备是使用这块 GPU 的接口，用于创建资源和获取队列。
-		VkDevice logicalDevice = VK_NULL_HANDLE;
+		VkPhysicalDevice physicalDevice = VK_NULL_HANDLE; // 选中的 GPU 句柄；它由 Vulkan 枚举出来。
+		VkDevice logicalDevice = VK_NULL_HANDLE;           // 操作该 GPU 的接口；用于创建资源和取得队列。
 	} mainDevices;
-	// 创建逻辑设备时申请的队列会同时被创建。这里保存队列句柄，方便以后提交工作。
-	// 句柄是访问已有对象的标识，不是复制出一份队列；队列随逻辑设备一起销毁。
-	VkQueue graphicsQueue = VK_NULL_HANDLE;      // 提交绘图工作。
-	VkQueue presentationQueue = VK_NULL_HANDLE; // 提交向窗口呈现图像的请求。
-	VkSurfaceKHR surface = VK_NULL_HANDLE;      // Vulkan 与这个窗口的呈现连接。
-	VkSwapchainKHR swapchain = VK_NULL_HANDLE;   // 管理一组轮流用于呈现的图像。
-	std::vector<SwapchainImage> SwapChainImages;
+	VkQueue graphicsQueue = VK_NULL_HANDLE;                 // 接收并执行绘图命令。
+	VkQueue presentationQueue = VK_NULL_HANDLE;             // 把交换链图像提交给窗口系统显示。
+	VkSurfaceKHR surface = VK_NULL_HANDLE;                   // Vulkan 与 GLFW 窗口之间的呈现连接。
+	VkSwapchainKHR swapchain = VK_NULL_HANDLE;               // 管理一组轮流渲染、呈现的图像。
+	std::vector<SwapchainImage> SwapChainImages;             // 保存每张交换链 Image 及其 ImageView。
+	std::vector<VkFramebuffer> swapchainFramebuffers;       // 每项把同下标 ImageView 绑定到 RenderPass 附件。
+	std::vector<VkCommandBuffer> commandBuffers;            // 每张交换链图像对应一份已经录制的绘图命令。
 
 	// - Pipeline
-	// Pipeline Layout 规定着色器能访问哪些描述符和推送常量；当前两者都没有，所以它是“空布局”。
-	VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-	// Render Pass 描述一次渲染如何使用颜色附件，以及附件开始、结束时应处于什么状态。
-	VkRenderPass renderPass = VK_NULL_HANDLE;
-	// 图形管线把着色器和顶点输入、光栅化、混色等固定状态组合成一个可绑定对象。
-	VkPipeline graphicsPipeline = VK_NULL_HANDLE;
+	VkPipelineLayout pipelineLayout = VK_NULL_HANDLE; // 着色器资源接口；当前没有描述符和 Push Constant。
+	VkRenderPass renderPass = VK_NULL_HANDLE;         // 规定附件、Subpass 及图像布局变化。
+	VkPipeline graphicsPipeline = VK_NULL_HANDLE;     // 汇总着色器、光栅化、混色等图形处理规则。
+
+	// - Pools
+	VkCommandPool graphicsCommandPool = VK_NULL_HANDLE; // 为图形队列族管理 Command Buffer 的分配内存。
 
 	// - Utility
-	VkFormat swapChainImageFormat = VK_FORMAT_UNDEFINED;
-	VkExtent2D swapChainExtent{};
+	VkFormat swapChainImageFormat = VK_FORMAT_UNDEFINED; // 交换链图像采用的像素格式。
+	VkExtent2D swapChainExtent{};                        // 交换链图像的实际宽高。
+
+	// - Synchronisation
+	// - 同步
+	std::vector<VkSemaphore> imageAvailableSemaphores; // 每个 currentFrame 一个：交换链图像已经可以开始绘制。
+	std::vector<VkSemaphore> renderFinishedSemaphores; // 每张交换链图像一个：该图像已经绘制完成，可以呈现。
+	std::vector<VkFence> drawFences;                   // 每个 currentFrame 一个：该组同步对象对应的提交已经执行完毕。
 
 	// Vulkan 函数
 	// - Create
-	void createInstance();
-	void createLogicalDevice();
-	void createSurface();
-	void createSwapChain();
-	// 描述交换链图像在一次渲染中的用途、布局变化和子通道关系。
-	void createRenderPass();
-	// 读取编译后的着色器，并逐步组装固定的图形管线状态。
-	void createGraphicsPipeline();
+	void createInstance();         // 创建 Vulkan 入口。
+	void createLogicalDevice();    // 创建操作 GPU 的设备及所需队列。
+	void createSurface();          // 建立 Vulkan 与窗口的呈现连接。
+	void createSwapChain();        // 创建交换链、取得图像并创建 ImageView。
+	void createRenderPass();       // 描述附件、Subpass 和布局转换规则。
+	void createGraphicsPipeline(); // 创建着色器模块并组装固定图形管线。
+	void createFramebuffers();     // 把每张交换链 ImageView 绑定到 RenderPass 附件。
+	void createCommandPool();      // 为图形队列族创建 Command Buffer 内存池。
+	void createCommandBuffers();   // 从 Command Pool 为每张交换链图像分配命令缓冲区。
+	void recordCommands();         // 把 RenderPass、管线绑定和绘制命令写入 Command Buffer。
+	void createSynchronization();  // 创建按 currentFrame 或交换链图像编号使用的同步对象。
+
 	// - Get
 	void getPhysicalDevice();
 
@@ -74,15 +83,15 @@ private:
 	VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& surfaceCapabilities);
 
 	// -- Create
-	VkImageView createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags);
-	// 把内存中的 SPIR-V 字节包装成逻辑设备可使用的 Shader Module。
-	VkShaderModule createShaderModule(const std::vector<char>& code);
+	VkImageView createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags); // 创建图像访问视图。
+	VkShaderModule createShaderModule(const std::vector<char>& code);                            // 把 SPIR-V 包装成 Shader Module。
 
 public:
 	VulkanRenderer();
 	~VulkanRenderer();
 
 	int init(GLFWwindow* newWindow);
+	void draw();
 	void cleanup();
 
 

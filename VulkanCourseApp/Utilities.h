@@ -2,6 +2,10 @@
 
 #include <fstream>
 
+// 程序准备两组可循环使用的帧同步对象，限制最多有两帧绘制任务处于处理中。
+// 它不是交换链图像数量；交换链图像数量由 Vulkan 和窗口系统共同决定。
+const int MAX_FRAME_DRAWS = 2;
+
 const std::vector<const char*> deviceExtensions = {
 	VK_KHR_SWAPCHAIN_EXTENSION_NAME
 };

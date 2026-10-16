@@ -36,6 +36,8 @@ int main() {
 	// 循环直到用户关闭窗口
 	while (!glfwWindowShouldClose(window)) {
 		glfwPollEvents();
+		// 每轮循环提交一帧绘制任务，并把画好的交换链图像提交给呈现队列。
+		vulkanRenderer.draw();
 	}
 
 	vulkanRenderer.cleanup();
