@@ -1,4 +1,5 @@
-﻿#define GLFW_INCLUDE_VULKAN
+﻿#define GLM_FORCE_DEPTH_ZERO_TO_ONE
+#define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
 #include <vector>
@@ -42,9 +43,32 @@ int main() {
 		return EXIT_FAILURE;
 	}
 
+	float angle = 0.0f;
+	float deltaTime = 0.0f; 
+	float lastTime = 0.0f;
+
 	// 总流程第 3 步：不断处理窗口事件，并绘制、呈现下一张图像。
 	while (!glfwWindowShouldClose(window)) {
 		glfwPollEvents();
+
+		float now = static_cast<float>(glfwGetTime());
+		deltaTime = now - lastTime;
+		lastTime = now;
+
+		angle += deltaTime * 10.0f;
+		if (angle > 360.0f) { angle -= 360.0f; }
+
+		glm::mat4 firstModel = glm::mat4(1.0f);
+		glm::mat4 secondModel = glm::mat4(1.0f);
+
+		firstModel = glm::translate(firstModel, glm::vec3(0.0f, 0.0f, -2.5f));
+		firstModel = glm::rotate(firstModel, glm::radians(angle), glm::vec3(0.0f, 0.0f, 1.0f));
+
+		secondModel = glm::translate(secondModel, glm::vec3(0.0f, 0.0f, -3.0f));
+		secondModel = glm::rotate(secondModel, glm::radians(-angle*10), glm::vec3(0.0f, 0.0f, 1.0f));
+
+		vulkanRenderer.updateModel(0, firstModel);
+		vulkanRenderer.updateModel(1, secondModel);
 		// 每轮循环提交一帧绘制任务，并把画好的交换链图像提交给呈现队列。
 		vulkanRenderer.draw();
 	}

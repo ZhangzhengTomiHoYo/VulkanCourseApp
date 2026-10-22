@@ -1,5 +1,7 @@
 ﻿#include "VulkanRenderer.h"
 
+#include <malloc.h>
+
 VulkanRenderer::VulkanRenderer()
 {
 }
@@ -362,6 +364,46 @@ void VulkanRenderer::createRenderPass()
 	}
 }
 
+void VulkanRenderer::createDescriptorSetLayout()
+{
+	// ###############################################################################
+	// # 描述符集布局创建总流程                                                      #
+	// #                                                                             #
+	// # 1. 为每个 uniform binding 填写 VkDescriptorSetLayoutBinding                 #
+	// # 2. 汇总所有 binding，创建一个 VkDescriptorSetLayout                         #
+	// ###############################################################################
+	// 布局只声明"binding 几、什么类型、哪个着色器阶段用"，不包含任何实际数据。
+	// Push Constants 改造：binding 1 的动态 Model UBO 已注释，目前只保留 binding 0 的 view/proj。
+
+	// UboViewProjection binding 信息
+	VkDescriptorSetLayoutBinding uboViewProjectionLayoutBinding{};
+	uboViewProjectionLayoutBinding.binding = 0;	
+	uboViewProjectionLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;	
+	uboViewProjectionLayoutBinding.descriptorCount = 1;	
+	uboViewProjectionLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;	
+	uboViewProjectionLayoutBinding.pImmutableSamplers = nullptr;	
+
+	//VkDescriptorSetLayoutBinding modelLayoutBinding{};
+	//modelLayoutBinding.binding = 1;
+	//// binding 1 使用动态 Uniform：绑定描述符时再通过 dynamicOffset 选择当前 Mesh 的模型矩阵。
+	//modelLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+	//modelLayoutBinding.descriptorCount = 1;
+	//modelLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	//modelLayoutBinding.pImmutableSamplers = nullptr;
+
+	std::vector<VkDescriptorSetLayoutBinding> bindings = { uboViewProjectionLayoutBinding };
+
+	VkDescriptorSetLayoutCreateInfo layoutCreateInfo{};
+	layoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	layoutCreateInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+	layoutCreateInfo.pBindings = bindings.data();
+
+	VkResult result = vkCreateDescriptorSetLayout(mainDevices.logicalDevice, &layoutCreateInfo, nullptr, &descriptorSetLayout);
+	if (result != VK_SUCCESS) {
+		throw std::runtime_error("Failed to create descriptor set layout!");
+	}
+}
+
 void VulkanRenderer::createGraphicsPipeline()
 {
 	// ###############################################################################
@@ -497,7 +539,7 @@ void VulkanRenderer::createGraphicsPipeline()
 	// 背面剔除：只光栅化朝向摄像机的正面，减少不可见片段的工作量。
 	rasterizerCreateInfo.cullMode = VK_CULL_MODE_BACK_BIT;
 	// 顺时针排列的顶点被认定为正面。该判断还会受到 viewport 的 Y 方向影响。
-	rasterizerCreateInfo.frontFace = VK_FRONT_FACE_CLOCKWISE;
+	rasterizerCreateInfo.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 	// 深度偏移常用于阴影贴图等场景，稍微移动深度以减轻 Z-fighting；当前不需要。
 	rasterizerCreateInfo.depthBiasEnable = VK_FALSE;
 
@@ -539,10 +581,13 @@ void VulkanRenderer::createGraphicsPipeline()
 	// 当前着色器只使用自身写死的顶点数组，没有描述符集合和 Push Constant，因此两项数量都为 0。
 	VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo{};
 	pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-	pipelineLayoutCreateInfo.setLayoutCount = 0;
-	pipelineLayoutCreateInfo.pSetLayouts = nullptr;
-	pipelineLayoutCreateInfo.pushConstantRangeCount = 0;
-	pipelineLayoutCreateInfo.pPushConstantRanges = nullptr;
+	pipelineLayoutCreateInfo.setLayoutCount = 1;
+	pipelineLayoutCreateInfo.pSetLayouts = &descriptorSetLayout;
+	// TODO（跟视频补）：shader 已经声明 push_constant 块 PushModel，这里要把
+	// pushConstantRangeCount 改为 1，并在 pPushConstantRanges 传入一个 VkPushConstantRange：
+	// stageFlags = VK_SHADER_STAGE_VERTEX_BIT，offset = 0，size = sizeof(Model)（64 字节）。
+	pipelineLayoutCreateInfo.pushConstantRangeCount = 1;
+	pipelineLayoutCreateInfo.pPushConstantRanges = &pushConstantRange;
 
 	// 即使布局内容为空，也必须创建一个 VkPipelineLayout，图形管线不能省略它。
 	VkResult result = vkCreatePipelineLayout(mainDevices.logicalDevice, &pipelineLayoutCreateInfo, nullptr, &pipelineLayout);
@@ -654,6 +699,9 @@ void VulkanRenderer::createCommandPool()
 	VkCommandPoolCreateInfo commandPoolCreateInfo{};
 	// 指明当前结构体是 Command Pool 创建信息。
 	commandPoolCreateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+
+	commandPoolCreateInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+
 	// 从这个 Pool 分配的 Command Buffer 只能提交给属于该队列族的队列。
 	commandPoolCreateInfo.queueFamilyIndex = queueFamilyIndices.graphicsFamily;
 	// flags 保持默认值 0：当前不要求单独重置某一个 Command Buffer，也不提供短生命周期提示。
@@ -697,7 +745,7 @@ void VulkanRenderer::createCommandBuffers()
 	}
 }
 
-void VulkanRenderer::recordCommands()
+void VulkanRenderer::recordCommands(uint32_t currentImage)
 {
 	// ###############################################################################
 	// # 命令录制总流程                                                              #
@@ -738,7 +786,9 @@ void VulkanRenderer::recordCommands()
 	renderPassBeginInfo.clearValueCount = 1;
 
 	// 每个 Command Buffer 都绑定同下标的 Framebuffer；绘制规则相同，最终写入的交换链图像不同。
-	for (size_t i = 0; i < commandBuffers.size(); ++i) {
+	
+	int i = currentImage;
+
 		// 每份 Command Buffer 对应一个 Framebuffer；二者使用相同的交换链图像编号。
 		renderPassBeginInfo.framebuffer = swapchainFramebuffers[i];
 
@@ -765,6 +815,30 @@ void VulkanRenderer::recordCommands()
 			vkCmdBindVertexBuffers(commandBuffers[i], 0, 1, vertexBuffers, offsets);
 			// 索引 Buffer 中的每个 uint32_t 都是一个顶点编号。
 			vkCmdBindIndexBuffer(commandBuffers[i], meshList[meshIndex].getIndexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+			
+			// Push Constants 改造：dynamicOffset 与动态 Model UBO 绑定已废弃。
+			// 旧写法——同一份描述符指向整个模型 Uniform Buffer；dynamicOffset 决定本次 Draw 从哪一块读取模型矩阵。
+			// 这里必须使用“对齐后的跨度”，不能直接使用 sizeof(Model)，否则偏移可能违反 GPU 的对齐要求。
+			//uint32_t dynamicOffset = static_cast<uint32_t>(modelUniformAlignment * meshIndex);
+
+			// TODO（跟视频补）：view/proj 仍在 binding 0，这里要重新绑定描述符，只是不再需要动态偏移：
+			// vkCmdBindDescriptorSets 传 firstSet=0、descriptorSetCount=1、&descriptorSets[i]，
+			// 且 dynamicOffsetCount=0、pDynamicOffsets=nullptr。下面旧写法因为带 dynamicOffset 已被注释。
+			//vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[i], 1, &dynamicOffset);
+
+			// getModel() 按值返回；先保存为局部变量，再传地址。调用时数据会被复制进命令缓冲区。
+			Model model = meshList[meshIndex].getModel();
+			vkCmdPushConstants(
+				commandBuffers[currentImage], 
+				pipelineLayout,
+				VK_SHADER_STAGE_VERTEX_BIT,
+				0,
+				sizeof(Model),
+				&model
+			);
+
+			vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[i], 0, nullptr);
+
 			// 录制一次索引绘制：读取当前 Mesh 的全部索引，只绘制一个实例，
 			// 并从索引 0、顶点偏移 0、实例 0 开始。
 			vkCmdDrawIndexed(commandBuffers[i], meshList[meshIndex].getIndexCount(), 1, 0, 0, 0);
@@ -777,7 +851,7 @@ void VulkanRenderer::recordCommands()
 		if (result != VK_SUCCESS) {
 			throw std::runtime_error("Failed to end command buffer!");
 		}
-	}
+	
 }
 
 void VulkanRenderer::createSynchronization()
@@ -832,6 +906,157 @@ void VulkanRenderer::createSynchronization()
 
 }
 
+void VulkanRenderer::createUniformBuffers()
+{
+	// ###############################################################################
+	// # Uniform Buffer 创建总流程                                                   #
+	// #                                                                             #
+	// # 1. 计算 View/Projection 数据大小并为每张交换链图像创建 Buffer                #
+	// # 2.（已废弃）按对齐跨度计算并创建动态 Model Uniform Buffer                    #
+	// ###############################################################################
+	// Push Constants 改造：model Uniform Buffer 不再创建；modelUniformBuffers 仍保留空 vector，
+	// 因此 cleanup() 中的遍历和 clear() 仍然安全，无需改动。
+	VkDeviceSize viewProjBufferSize = sizeof(UboViewProjection);
+	// 每份模型矩阵的起点必须相隔 modelUniformAlignment，而不是紧挨 sizeof(Model) 排列。
+	//VkDeviceSize modelBufferSize = modelUniformAlignment * MAX_OBJECTS;
+
+	viewProjUniformBuffers.resize(SwapChainImages.size());
+	viewProjUniformBuffersMemory.resize(SwapChainImages.size());
+	modelUniformBuffers.resize(SwapChainImages.size());
+	modelUniformBuffersMemory.resize(SwapChainImages.size());
+
+	for (size_t i = 0; i < SwapChainImages.size(); ++i) {
+		createBuffer(mainDevices.physicalDevice, mainDevices.logicalDevice, viewProjBufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &viewProjUniformBuffers[i], &viewProjUniformBuffersMemory[i]);
+		//createBuffer(mainDevices.physicalDevice, mainDevices.logicalDevice, modelBufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &modelUniformBuffers[i], &modelUniformBuffersMemory[i]);
+	}
+}
+
+void VulkanRenderer::createDescriptorPool()
+{
+	// ###############################################################################
+	// # 描述符池创建总流程                                                          #
+	// #                                                                             #
+	// # 1. 为每种描述符类型填写一个 VkDescriptorPoolSize（类型 + 数量）             #
+	// # 2. 创建 VkDescriptorPool；描述符集都从这个池中分配                          #
+	// ###############################################################################
+	// Push Constants 改造：动态 UBO 的池大小已注释，每张交换链图像只需要 1 个普通 UBO 描述符。
+	VkDescriptorPoolSize viewProjPoolSize{};
+	viewProjPoolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	viewProjPoolSize.descriptorCount = static_cast<uint32_t>(viewProjUniformBuffers.size());
+
+	//VkDescriptorPoolSize modelPoolSize{};
+	//modelPoolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+	//modelPoolSize.descriptorCount = static_cast<uint32_t>(modelUniformBuffers.size());
+
+	std::vector<VkDescriptorPoolSize> poolSizes = { viewProjPoolSize };
+
+	VkDescriptorPoolCreateInfo poolCreateInfo{};
+	poolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	poolCreateInfo.maxSets = static_cast<uint32_t>(SwapChainImages.size());
+	poolCreateInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+	poolCreateInfo.pPoolSizes = poolSizes.data();
+
+	VkResult result = vkCreateDescriptorPool(mainDevices.logicalDevice, &poolCreateInfo, nullptr, &descriptorPool);
+	if (result != VK_SUCCESS) {
+		throw std::runtime_error("Failed to create descriptor pool!");
+	}
+
+}
+
+void VulkanRenderer::createDescriptorSets()
+{
+	// ###############################################################################
+	// # 描述符集创建与写入总流程                                                    #
+	// #                                                                             #
+	// # 1. 为每张交换链图像从描述符池分配一个 VkDescriptorSet                       #
+	// # 2. 用 VkWriteDescriptorSet 把每张图的 Uniform Buffer 写进对应 binding       #
+	// ###############################################################################
+	// Push Constants 改造：binding 1 的动态 Model Buffer 写入已注释，目前只写 binding 0。
+	descriptorSets.resize(SwapChainImages.size());
+
+	std::vector<VkDescriptorSetLayout> setLayouts(SwapChainImages.size(), descriptorSetLayout);
+
+	VkDescriptorSetAllocateInfo setAllocInfo{};
+	setAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	setAllocInfo.descriptorPool = descriptorPool;
+	setAllocInfo.descriptorSetCount = static_cast<uint32_t>(SwapChainImages.size());
+	setAllocInfo.pSetLayouts = setLayouts.data();
+
+	VkResult result = vkAllocateDescriptorSets(mainDevices.logicalDevice, &setAllocInfo, descriptorSets.data());
+	if (result != VK_SUCCESS) {
+		throw std::runtime_error("Failed to allocate descriptor sets!");
+	}
+
+	for (size_t i = 0; i < SwapChainImages.size(); ++i) {
+		VkDescriptorBufferInfo uboViewProjectionBufferInfo{};
+		uboViewProjectionBufferInfo.buffer = viewProjUniformBuffers[i];
+		uboViewProjectionBufferInfo.offset = 0;
+		uboViewProjectionBufferInfo.range = sizeof(UboViewProjection);
+
+		VkWriteDescriptorSet uboViewProjectionSetWrite{};
+		uboViewProjectionSetWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; 
+		uboViewProjectionSetWrite.dstSet = descriptorSets[i];
+		uboViewProjectionSetWrite.dstBinding = 0;
+		uboViewProjectionSetWrite.dstArrayElement = 0;
+		uboViewProjectionSetWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		uboViewProjectionSetWrite.descriptorCount = 1;
+		uboViewProjectionSetWrite.pBufferInfo = &uboViewProjectionBufferInfo;
+
+		//VkDescriptorBufferInfo modelBufferInfo{};
+		//modelBufferInfo.buffer = modelUniformBuffers[i];
+		//modelBufferInfo.offset = 0;
+		//modelBufferInfo.range = modelUniformAlignment;
+
+		//VkWriteDescriptorSet modelSetWrite{}; 
+		//modelSetWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		//modelSetWrite.dstSet = descriptorSets[i];
+		//modelSetWrite.dstBinding = 1;
+		//modelSetWrite.dstArrayElement = 0;
+		//modelSetWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+		//modelSetWrite.descriptorCount = 1;
+		//modelSetWrite.pBufferInfo = &modelBufferInfo;
+
+		std::vector<VkWriteDescriptorSet> descriptorWrites = { uboViewProjectionSetWrite };
+
+		vkUpdateDescriptorSets(mainDevices.logicalDevice, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+	}
+
+}
+
+void VulkanRenderer::createPushConstantRange()
+{
+	pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	pushConstantRange.offset = 0;
+	pushConstantRange.size = sizeof(Model);
+}
+
+void VulkanRenderer::updateUniformBuffer(uint32_t imageIndex)
+{
+	// ###############################################################################
+	// # 每帧 Uniform 数据更新流程                                                   #
+	// #                                                                             #
+	// # 1. 把 View/Projection 矩阵写入本次交换链图像对应的 Buffer                    #
+	// # 2.（已废弃）按对齐间隔把每个 Model 矩阵放入 CPU 临时区                        #
+	// # 3.（已废弃）一次性把临时区复制到动态 Model Uniform Buffer                    #
+	// ###############################################################################
+	// Push Constants 改造：模型矩阵不再走 Uniform Buffer，第 2、3 步已注释，
+	// 改由录制命令时的 vkCmdPushConstants 写入；本函数现在只更新 view/proj。
+	// 只更新本次取得的交换链图像对应的 Uniform Buffer，避免改写 GPU 可能仍在读取的另一份数据。
+	void* data = nullptr;
+	vkMapMemory(mainDevices.logicalDevice, viewProjUniformBuffersMemory[imageIndex], 0, sizeof(UboViewProjection), 0, &data);
+	memcpy(data, &uboViewProjection, sizeof(UboViewProjection));
+	vkUnmapMemory(mainDevices.logicalDevice, viewProjUniformBuffersMemory[imageIndex]);
+
+	//for (size_t i = 0; i < meshList.size(); ++i) {
+	//	Model* thisModel = (Model*)((uint64_t)modelTransferSpace + (i * modelUniformAlignment));
+	//	*thisModel = meshList[i].getModel();
+	//}
+
+	//vkMapMemory(mainDevices.logicalDevice, modelUniformBuffersMemory[imageIndex], 0, modelUniformAlignment * MAX_OBJECTS, 0, &data);
+	//memcpy(data, modelTransferSpace, modelUniformAlignment * meshList.size());
+	//vkUnmapMemory(mainDevices.logicalDevice, modelUniformBuffersMemory[imageIndex]);
+}
+
 void VulkanRenderer::getPhysicalDevice()
 {
 	// ###############################################################################
@@ -864,7 +1089,37 @@ void VulkanRenderer::getPhysicalDevice()
 	if (mainDevices.physicalDevice == VK_NULL_HANDLE) {
 		throw std::runtime_error("Failed to find a suitable GPU!");
 	}
+
+	// Push Constants 改造：模型矩阵不再走动态 Uniform Buffer，这里不再需要查询动态 Uniform 的对齐值。
+	//VkPhysicalDeviceProperties deviceProperties;
+	//vkGetPhysicalDeviceProperties(mainDevices.physicalDevice, &deviceProperties);
+	//// 动态 Uniform 的偏移必须是这个数的整数倍；具体数值由当前 NVIDIA GPU 报告。
+	//minUniformBufferOffsetAlignment = deviceProperties.limits.minUniformBufferOffsetAlignment;
+
 }
+
+/* Push Constants 改造：模型矩阵不再经过动态 Uniform Buffer，CPU 对齐临时区不再需要，整个函数暂停使用。
+ * 若以后改回动态 UBO，恢复本函数、头文件中的声明以及 init() 里的调用即可。
+void VulkanRenderer::allocateDynamicBufferTransferSpace()
+{
+	// ###############################################################################
+	// # 动态 Model Uniform 的 CPU 临时区准备流程                                    #
+	// #                                                                             #
+	// # 1. 把 sizeof(Model) 向上取整到 GPU 允许的对齐位置                         #
+	// # 2. 为 MAX_OBJECTS 份模型数据申请一块同样对齐的 CPU 内存                     #
+	// ###############################################################################
+	// 例如 Model 为 66 字节、GPU 要求 32 字节对齐，结果就是 96，而不是 64。
+	// minUniformBufferOffsetAlignment 是 2 的幂，因此可以使用这个位运算完成向上对齐。
+	modelUniformAlignment = (sizeof(Model) + minUniformBufferOffsetAlignment - 1) & ~(minUniformBufferOffsetAlignment - 1);
+
+	modelTransferSpace = static_cast<Model*>(_aligned_malloc(
+		static_cast<size_t>(modelUniformAlignment * MAX_OBJECTS),
+		static_cast<size_t>(modelUniformAlignment)));
+	if (modelTransferSpace == nullptr) {
+		throw std::runtime_error("Failed to allocate aligned model transfer space!");
+	}
+}
+*/
 
 bool VulkanRenderer::checkInstanceExtensionSupport(std::vector<const char*>* checkExtensions)
 {
@@ -1141,21 +1396,28 @@ int VulkanRenderer::init(GLFWwindow* newWindow)
 		// Mesh::copyBuffer() 需要从该 Pool 分配临时 Command Buffer，
 		// 所以必须在创建 Mesh 之前先创建 Command Pool。
 		createCommandPool();
+		// 投影矩阵和后续渲染资源都依赖交换链的实际尺寸。
+		createSwapChain();
+
+		uboViewProjection.proj = glm::perspective(glm::radians(45.0f), swapChainExtent.width / (float)swapChainExtent.height, 0.1f, 10.0f);
+		uboViewProjection.view = glm::lookAt(glm::vec3(0.0f, 0.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+
+		uboViewProjection.proj[1][1] *= -1; // 翻转 Y 轴，适应 Vulkan 的坐标系
 
 		// 初始化第 2 步：在 CPU 端准备两个 Mesh 的顶点和索引，再上传到设备本地显存。
 		// 每个 Vertex 同时包含位置和颜色；两个数组分别描述左、右两个矩形的四个顶点。
 		std::vector<Vertex> meshVertices1 = {
-			{{0.0, -0.4, 0.0}, {1.0f, 0.0f, 0.0f}},
-			{{0.0, 0.4, 0.0}, {0.0f, 1.0f, 0.0f}},
-			{{-0.9, 0.4, 0.0}, {0.0f, 0.0f, 1.0f}},
-			{{-0.9, -0.4, 0.0}, {1.0f, 0.0f, 0.0f}}
+			{{-0.4, 0.4, 0.0}, {1.0f, 0.0f, 0.0f}},
+			{{-0.4, -0.4, 0.0}, {0.0f, 1.0f, 0.0f}},
+			{{0.4, -0.4, 0.0}, {0.0f, 0.0f, 1.0f}},
+			{{0.4, 0.4, 0.0}, {1.0f, 0.0f, 0.0f}}
 		};
 
 		std::vector<Vertex> meshVertices2 = {
-			{{0.9, -0.4, 0.0}, {1.0f, 0.0f, 0.0f}},
-			{{0.9, 0.4, 0.0}, {0.0f, 1.0f, 0.0f}},
-			{{0.1, 0.4, 0.0}, {0.0f, 0.0f, 1.0f}},
-			{{0.1, -0.4, 0.0}, {1.0f, 0.0f, 0.0f}}
+			{{-0.25, 0.6, 0.0}, {1.0f, 0.0f, 0.0f}},
+			{{-0.25, -0.6, 0.0}, {0.0f, 1.0f, 0.0f}},
+			{{0.25, -0.6, 0.0}, {0.0f, 0.0f, 1.0f}},
+			{{0.25, 0.6, 0.0}, {1.0f, 0.0f, 0.0f}}
 		};
 
 		std::vector<uint32_t> meshIndices = {
@@ -1173,17 +1435,31 @@ int VulkanRenderer::init(GLFWwindow* newWindow)
 		// Renderer 通过 meshList 统一保存需要绘制的 Mesh；录制命令时会依次遍历它们。
 		meshList = { mesh1, mesh2 };
 
+		glm::mat4 meshModelMatrix = meshList[0].getModel().model;
+		meshModelMatrix = glm::rotate(meshModelMatrix, glm::radians(45.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+		meshList[0].setModel(meshModelMatrix);
+
 
 		// 初始化第 3 步：建立从交换链图像到 RenderPass、Framebuffer 和图形管线的渲染目标。
-		// 逻辑设备就绪后才能创建交换链；函数内部还会获取图像并逐张创建图像视图。
-		createSwapChain();
+		// 交换链已就绪；RenderPass 必须先于图形管线和 Framebuffer 创建。
 		createRenderPass();
+		createDescriptorSetLayout();
+
+		createPushConstantRange();
+
 		// 图形管线依赖逻辑设备和交换链格式；当前阶段先读取着色器并配置两个着色器阶段。
 		createGraphicsPipeline();
 		createFramebuffers();
 		// 初始化第 4 步：从已有的 Command Pool 分配绘图 Command Buffer，再录入实际绘图步骤。
 		createCommandBuffers();
-		recordCommands();
+		// Push Constants 改造：不再需要 CPU 对齐临时区，该步骤暂停使用。
+		// 动态 Uniform Buffer 的大小依赖 GPU 对齐要求，必须先计算跨度并准备 CPU 临时区。
+		//allocateDynamicBufferTransferSpace();
+		createUniformBuffers();
+		createDescriptorPool();
+		createDescriptorSets();
+		// Push Constants 改造：模型矩阵每帧变化，命令改为在 draw() 中每帧重新录制，init() 不再录制。
+		//recordCommands();
 		// 初始化第 5 步：创建绘制循环用于协调 CPU、图形队列和呈现队列的同步对象。
 		createSynchronization();
 	}
@@ -1194,6 +1470,17 @@ int VulkanRenderer::init(GLFWwindow* newWindow)
 		return EXIT_FAILURE;  // #define EXIT_FAILURE 1 所以返回0代表成功，返回1代表失败
 	}
 	return 0;
+}
+
+void VulkanRenderer::updateModel(int modelID, glm::mat4 newModel)
+{
+	if (modelID < 0 || modelID >= meshList.size()) {
+		throw std::out_of_range("Invalid model ID");
+	}
+
+	// 主循环把每个 Mesh 的最新模型矩阵写入 Mesh；下一次 draw() 录制命令时会读取它。
+	// Push Constants 改造完成后，该矩阵将由 vkCmdPushConstants 写进命令流，不再上传到动态 Uniform Buffer。
+	meshList[modelID].setModel(newModel);
 }
 
 void VulkanRenderer::draw()
@@ -1226,6 +1513,10 @@ void VulkanRenderer::draw()
 	// - VK_NULL_HANDLE：这里用信号量接收通知，不另外使用 Fence；
 	// - imageIndex：接收实际取得的交换链图像编号。
 	vkAcquireNextImageKHR(mainDevices.logicalDevice, swapchain, std::numeric_limits<uint64_t>::max(), imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+
+
+	recordCommands(imageIndex);
+	updateUniformBuffer(imageIndex);
 
 	// 绘制第 3 步：描述绘制任务，并提交给 graphicsQueue 执行。
 	VkSubmitInfo submitInfo{};
@@ -1291,7 +1582,50 @@ void VulkanRenderer::cleanup()
 	// # 6. 销毁逻辑设备                                                             #
 	// # 7. 销毁 Surface 和实例                                                      #
 	// ###############################################################################
-	vkDeviceWaitIdle(mainDevices.logicalDevice);
+	if (mainDevices.logicalDevice != VK_NULL_HANDLE) {
+		vkDeviceWaitIdle(mainDevices.logicalDevice);
+	}
+
+	// Push Constants 改造：modelTransferSpace 已不再分配，这里暂停释放。
+	// modelTransferSpace 由 _aligned_malloc() 创建，必须用配对的 _aligned_free() 释放。
+	// 它是 CPU 临时内存，不是 VkDeviceMemory，因此不能交给 vkFreeMemory()。
+	//_aligned_free(modelTransferSpace);
+	//modelTransferSpace = nullptr;
+
+	if (mainDevices.logicalDevice != VK_NULL_HANDLE) {
+		// 销毁 Descriptor Pool 会同时释放由它分配的 Descriptor Set。
+		if (descriptorPool != VK_NULL_HANDLE) {
+			vkDestroyDescriptorPool(mainDevices.logicalDevice, descriptorPool, nullptr);
+			descriptorPool = VK_NULL_HANDLE;
+		}
+		if (descriptorSetLayout != VK_NULL_HANDLE) {
+			vkDestroyDescriptorSetLayout(mainDevices.logicalDevice, descriptorSetLayout, nullptr);
+			descriptorSetLayout = VK_NULL_HANDLE;
+		}
+
+		// 每张交换链图像各有一份 View/Projection Buffer 和一份动态 Model Buffer。
+		// 每一对资源都按“先销毁 VkBuffer，再释放其 VkDeviceMemory”的顺序处理。
+		for (size_t i = 0; i < viewProjUniformBuffers.size(); ++i) {
+			if (viewProjUniformBuffers[i] != VK_NULL_HANDLE) {
+				vkDestroyBuffer(mainDevices.logicalDevice, viewProjUniformBuffers[i], nullptr);
+			}
+			if (i < viewProjUniformBuffersMemory.size() && viewProjUniformBuffersMemory[i] != VK_NULL_HANDLE) {
+				vkFreeMemory(mainDevices.logicalDevice, viewProjUniformBuffersMemory[i], nullptr);
+			}
+		}
+		for (size_t i = 0; i < modelUniformBuffers.size(); ++i) {
+			if (modelUniformBuffers[i] != VK_NULL_HANDLE) {
+				vkDestroyBuffer(mainDevices.logicalDevice, modelUniformBuffers[i], nullptr);
+			}
+			if (i < modelUniformBuffersMemory.size() && modelUniformBuffersMemory[i] != VK_NULL_HANDLE) {
+				vkFreeMemory(mainDevices.logicalDevice, modelUniformBuffersMemory[i], nullptr);
+			}
+		}
+	}
+	viewProjUniformBuffers.clear();
+	viewProjUniformBuffersMemory.clear();
+	modelUniformBuffers.clear();
+	modelUniformBuffersMemory.clear();
 
 	// 顶点 Buffer 和它绑定的显存都是逻辑设备的子对象，必须先于 vkDestroyDevice() 释放。
 	for (size_t i = 0; i < meshList.size(); i++)
