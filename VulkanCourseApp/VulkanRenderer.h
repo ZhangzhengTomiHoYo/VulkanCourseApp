@@ -107,6 +107,7 @@ private:
 	void createDescriptorSets();   // 分配描述符集并把各 Uniform Buffer 写入对应 binding。
 	void createPushConstantRange(); // Push Constant 改造：填写 pushConstantRange 的阶段、偏移与大小（cpp 中尚未实现，跟视频补）。
 
+	void createDepthBufferImage();
 
 	void updateUniformBuffer(uint32_t imageIndex); // 每帧把 view/proj 矩阵写入本次交换链图像对应的 Uniform Buffer。
 
@@ -129,9 +130,11 @@ private:
 	VkPresentModeKHR chooseBestPresentationMode(const std::vector<VkPresentModeKHR>& presentationModes); // 从呈现模式中选呈现模式。
 	VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& surfaceCapabilities); // 在窗口尺寸和图像能力之间确定交换链分辨率。
 
-
+	VkFormat chooseSupportedFormat(const std::vector<VkFormat>& formats, VkImageTiling tiling, VkFormatFeatureFlags featureFlags);
 
 	// -- Create
+	VkImage createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags useFlags, VkMemoryPropertyFlags propFlags, VkDeviceMemory* imageMemory);
+
 	VkImageView createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags); // 创建图像访问视图。
 	VkShaderModule createShaderModule(const std::vector<char>& code);                            // 把 SPIR-V 包装成 Shader Module。
 

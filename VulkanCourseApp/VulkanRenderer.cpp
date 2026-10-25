@@ -282,12 +282,28 @@ void VulkanRenderer::createRenderPass()
 	// 当前没有模板附件，因此模板数据在开始和结束时都不需要处理。
 	colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 	colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-
 	// UNDEFINED 表示不关心图像进入 Render Pass 前的内容和布局；这与上面的 CLEAR 配合使用。
 	// Vulkan 会在 Render Pass 内部把图像转换到子通道需要的颜色附件布局。
 	colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	// Render Pass 结束时再转换为呈现布局，让 vkQueuePresentKHR 可以读取它。
 	colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+
+	VkAttachmentDescription depthAttachment{};
+	depthAttachment.format = chooseSupportedFormat(
+		{ VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D32_SFLOAT, VK_FORMAT_D24_UNORM_S8_UINT },
+		VK_IMAGE_TILING_OPTIMAL,
+		VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
+	);
+	depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+	depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+
 
 	// AttachmentDescription 说明“槽位里的图像怎样使用”；AttachmentReference 则说明
 	// “当前子通道要使用第几个槽位，以及使用时需要什么布局”。
@@ -297,6 +313,13 @@ void VulkanRenderer::createRenderPass()
 	// 子通道写颜色时，图像应处于最适合颜色附件读写的布局。
 	colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
+
+	VkAttachmentReference depthAttachmentReference{};
+	depthAttachmentReference.attachment = 1;
+	depthAttachmentReference.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+
+
 	// Subpass（子通道）描述 Render Pass 内的一段实际渲染工作。
 	// 当前只有一个子通道：使用图形管线，并把结果写入上面的颜色附件。
 	VkSubpassDescription subpass{};
@@ -304,6 +327,7 @@ void VulkanRenderer::createRenderPass()
 	subpass.colorAttachmentCount = 1;
 	// 这里保存的是引用数组的地址；只有一个颜色附件，所以直接传单个变量的地址。
 	subpass.pColorAttachments = &colorAttachmentRef;
+	subpass.pDepthStencilAttachment = &depthAttachmentReference;
 
 	// Dependency（依赖）规定子通道与外部操作之间的执行、内存先后关系。
 	// 阅读一条依赖时，可以把 src 理解为“前一项工作”，把 dst 理解为“后一项工作”：
@@ -344,12 +368,18 @@ void VulkanRenderer::createRenderPass()
 	// 依赖选项：同样不启用任何额外依赖标志。
 	subpassDependencies[1].dependencyFlags = 0;
 
+
+	std::array<VkAttachmentDescription, 2> renderPassAttachments = { colorAttachment, depthAttachment };
+
+
+
+
 	// 最后把“有哪些附件、有哪些子通道、它们如何同步”汇总成 Render Pass 创建信息。
 	VkRenderPassCreateInfo renderPassCreateInfo{};
 	renderPassCreateInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
 	// attachmentCount 与 pAttachments 必须配套：这里传入一份颜色附件描述。
-	renderPassCreateInfo.attachmentCount = 1;
-	renderPassCreateInfo.pAttachments = &colorAttachment;
+	renderPassCreateInfo.attachmentCount = static_cast<uint32_t>(renderPassAttachments.size());
+	renderPassCreateInfo.pAttachments = renderPassAttachments.data();
 	// 当前 Render Pass 只有一个子通道。
 	renderPassCreateInfo.subpassCount = 1;
 	renderPassCreateInfo.pSubpasses = &subpass;
@@ -597,6 +627,13 @@ void VulkanRenderer::createGraphicsPipeline()
 
 	// -- Depth Stencil Test（深度与模板测试）--
 	// 当前 Render Pass 没有深度/模板附件，所以不提供该阶段的创建信息。
+	VkPipelineDepthStencilStateCreateInfo depthStencilCreateInfo{};
+	depthStencilCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+	depthStencilCreateInfo.depthTestEnable = VK_TRUE;
+	depthStencilCreateInfo.depthWriteEnable = VK_TRUE;
+	depthStencilCreateInfo.depthCompareOp = VK_COMPARE_OP_LESS;
+	depthStencilCreateInfo.depthBoundsTestEnable = VK_FALSE;
+	depthStencilCreateInfo.stencilTestEnable = VK_FALSE;
 
 	// 前面每个 CreateInfo 只描述管线的一部分；这里把它们的地址汇总起来，创建完整图形管线。
 	VkGraphicsPipelineCreateInfo pipelineCreateInfo{};
@@ -614,7 +651,7 @@ void VulkanRenderer::createGraphicsPipeline()
 	pipelineCreateInfo.pMultisampleState = &multisamplingCreateInfo;
 	pipelineCreateInfo.pColorBlendState = &colorBlendingCreateInfo;
 	// 没有深度/模板附件，因此这里可以是 nullptr。
-	pipelineCreateInfo.pDepthStencilState = nullptr;
+	pipelineCreateInfo.pDepthStencilState = &depthStencilCreateInfo;
 	// 管线布局规定着色器资源接口；Render Pass 与 subpass 规定这条管线的输出目标必须兼容什么结构。
 	pipelineCreateInfo.layout = pipelineLayout;
 	pipelineCreateInfo.renderPass = renderPass;
@@ -654,8 +691,9 @@ void VulkanRenderer::createFramebuffers()
 		// attachments 是“这个 Framebuffer 实际绑定了哪些 ImageView”的数组。
 		// 当前 RenderPass 只有一个颜色附件，所以数组中也只有一个 ImageView。
 		// 第 i 个 Framebuffer 绑定第 i 张交换链图像的视图。
-		std::array<VkImageView, 1> attachments = {
-			SwapChainImages[i].imageView
+		std::array<VkImageView, 2> attachments = {
+			SwapChainImages[i].imageView,
+			depthBufferImageView
 		};
 
 		// Framebuffer 不保存渲染规则，它只负责把具体图像与 RenderPass 声明的附件槽位对应起来。
@@ -777,13 +815,14 @@ void VulkanRenderer::recordCommands(uint32_t currentImage)
 
 	// RenderPass 的颜色附件使用 LOAD_OP_CLEAR，因此开始时需要提供清除颜色。
 	// 四个分量依次是 R、G、B、A，取值范围通常为 0.0 到 1.0。
-	VkClearValue clearValues[] = {
-		{0.6f, 0.65f, 0.4f, 1.0f}
-	};
+	std::array<VkClearValue, 2> clearValues{};
+	clearValues[0].color = { 0.6f, 0.65f, 0.4f, 1.0f };
+	clearValues[1].depthStencil.depth = 1.0f;
+
 	// pClearValues 指向清除值数组；数组下标与 RenderPass 中附件的下标对应。
-	renderPassBeginInfo.pClearValues = clearValues;
+	renderPassBeginInfo.pClearValues = clearValues.data();
 	// 当前只有一个颜色附件，所以只提供一个清除值。
-	renderPassBeginInfo.clearValueCount = 1;
+	renderPassBeginInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
 
 	// 每个 Command Buffer 都绑定同下标的 Framebuffer；绘制规则相同，最终写入的交换链图像不同。
 	
@@ -1028,6 +1067,20 @@ void VulkanRenderer::createPushConstantRange()
 	pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 	pushConstantRange.offset = 0;
 	pushConstantRange.size = sizeof(Model);
+}
+
+void VulkanRenderer::createDepthBufferImage()
+{
+	VkFormat depthFormat = chooseSupportedFormat(
+		{ VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D32_SFLOAT, VK_FORMAT_D24_UNORM_S8_UINT },
+		VK_IMAGE_TILING_OPTIMAL,
+		VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
+	);
+
+	depthBufferImage = createImage(swapChainExtent.width, swapChainExtent.height, depthFormat, 
+		VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &depthBufferImageMemory);
+
+	depthBufferImageView = createImageView(depthBufferImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
 }
 
 void VulkanRenderer::updateUniformBuffer(uint32_t imageIndex)
@@ -1323,6 +1376,67 @@ VkExtent2D VulkanRenderer::chooseSwapExtent(const VkSurfaceCapabilitiesKHR& surf
 	}
 }
 
+VkFormat VulkanRenderer::chooseSupportedFormat(const std::vector<VkFormat>& formats, VkImageTiling tiling, VkFormatFeatureFlags featureFlags)
+{
+	for (VkFormat format : formats)
+	{
+		VkFormatProperties properties;
+		vkGetPhysicalDeviceFormatProperties(mainDevices.physicalDevice, format, &properties);
+
+		if (tiling == VK_IMAGE_TILING_LINEAR && (properties.linearTilingFeatures & featureFlags) == featureFlags)
+		{
+			return format;
+		}
+		else if (tiling == VK_IMAGE_TILING_OPTIMAL && (properties.optimalTilingFeatures & featureFlags) == featureFlags)
+		{
+			return format;
+		}
+	}
+}
+
+VkImage VulkanRenderer::createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags useFlags, VkMemoryPropertyFlags propFlags, VkDeviceMemory* imageMemory)
+{
+	VkImageCreateInfo imageCreateInfo{};
+	imageCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+	imageCreateInfo.imageType = VK_IMAGE_TYPE_2D;
+	imageCreateInfo.extent.width = width;
+	imageCreateInfo.extent.height = height;
+	imageCreateInfo.extent.depth = 1;
+	imageCreateInfo.mipLevels = 1;
+	imageCreateInfo.arrayLayers = 1;
+	imageCreateInfo.format = format;
+	imageCreateInfo.tiling = tiling;
+	imageCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	imageCreateInfo.usage = useFlags;
+	imageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+	imageCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+	VkImage image;
+	VkResult result = vkCreateImage(mainDevices.logicalDevice, &imageCreateInfo, nullptr, &image);
+	if (result != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to create an Image!");
+	}
+
+	VkMemoryRequirements memoryRequirements;
+	vkGetImageMemoryRequirements(mainDevices.logicalDevice, image, &memoryRequirements);
+
+	VkMemoryAllocateInfo memoryAllocInfo{};
+	memoryAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	memoryAllocInfo.allocationSize = memoryRequirements.size;
+	memoryAllocInfo.memoryTypeIndex = findMemoryTypeIndex(mainDevices.physicalDevice, memoryRequirements.memoryTypeBits, propFlags);
+
+	result = vkAllocateMemory(mainDevices.logicalDevice, &memoryAllocInfo, nullptr, imageMemory);
+	if (result != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to allocate memory for image!");
+	}
+
+	vkBindImageMemory(mainDevices.logicalDevice, image, *imageMemory, 0);
+
+	return image;
+}
+
 VkImageView VulkanRenderer::createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags)
 {
 	VkImageViewCreateInfo viewCreateInfo{};
@@ -1446,7 +1560,7 @@ int VulkanRenderer::init(GLFWwindow* newWindow)
 		createDescriptorSetLayout();
 
 		createPushConstantRange();
-
+		createDepthBufferImage();
 		// 图形管线依赖逻辑设备和交换链格式；当前阶段先读取着色器并配置两个着色器阶段。
 		createGraphicsPipeline();
 		createFramebuffers();
@@ -1585,6 +1699,10 @@ void VulkanRenderer::cleanup()
 	if (mainDevices.logicalDevice != VK_NULL_HANDLE) {
 		vkDeviceWaitIdle(mainDevices.logicalDevice);
 	}
+
+	vkDestroyImageView(mainDevices.logicalDevice, depthBufferImageView, nullptr);
+	vkDestroyImage(mainDevices.logicalDevice, depthBufferImage, nullptr);
+	vkFreeMemory(mainDevices.logicalDevice, depthBufferImageMemory, nullptr);
 
 	// Push Constants 改造：modelTransferSpace 已不再分配，这里暂停释放。
 	// modelTransferSpace 由 _aligned_malloc() 创建，必须用配对的 _aligned_free() 释放。
