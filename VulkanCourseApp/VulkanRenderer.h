@@ -1,6 +1,7 @@
 ﻿#pragma once
 #define NOMINMAX
 #define VK_USE_PLATFORM_WIN32_KHR
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
@@ -16,6 +17,8 @@
 #include <array>
 #include "Utilities.h"
 #include "Mesh.h"
+
+#include "stb_image.h"
 
 class VulkanRenderer
 {
@@ -50,6 +53,9 @@ private:
 	VkImage depthBufferImage;
 	VkDeviceMemory depthBufferImageMemory;
 	VkImageView depthBufferImageView;
+
+	std::vector<VkImage> textureImages;
+	std::vector<VkDeviceMemory> textureImageMemory;
 
 	// - 描述符集 Descriptors
 	VkDescriptorSetLayout descriptorSetLayout; // 声明各 binding 的类型与使用阶段（binding 0 为 view/proj UBO）。
@@ -137,6 +143,9 @@ private:
 
 	VkImageView createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags); // 创建图像访问视图。
 	VkShaderModule createShaderModule(const std::vector<char>& code);                            // 把 SPIR-V 包装成 Shader Module。
+
+	int createTextureImage(std::string fileName);
+	stbi_uc* loadTextureFile(std::string fileName, int* width, int* height, VkDeviceSize* imageSize);
 
 public:
 	VulkanRenderer();

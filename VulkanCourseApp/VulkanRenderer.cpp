@@ -1487,6 +1487,67 @@ VkShaderModule VulkanRenderer::createShaderModule(const std::vector<char>& code)
 	return shaderModule;
 }
 
+int VulkanRenderer::createTextureImage(std::string fileName)
+{
+	// 加载图像文件
+	int width, height;
+	VkDeviceSize imageSize;
+	stbi_uc* imageData = loadTextureFile(fileName, &width, &height, &imageSize);
+
+	// 创建暂存缓冲区存储加载的数据 准备送往gpu
+	VkBuffer imageStagingBuffer;
+	VkDeviceMemory imageStagingBufferMemory;
+	createBuffer(mainDevices.physicalDevice, mainDevices.logicalDevice, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &imageStagingBuffer, &imageStagingBufferMemory);
+
+	// 拷贝图像数据到暂存缓冲区
+	void* data;
+	vkMapMemory(mainDevices.logicalDevice, imageStagingBufferMemory, 0, imageSize, 0, &data);
+	memcpy(data, imageData, static_cast<size_t>(imageSize));
+	vkUnmapMemory(mainDevices.logicalDevice, imageStagingBufferMemory);
+
+	// 释放图像数据
+	stbi_image_free(imageData);
+
+	// 创建图像存储gpu上的纹理
+	VkImage texImage;
+	VkDeviceMemory texImageMemory;
+	texImage = createImage(width, height, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &texImageMemory);
+
+
+	// 拷贝数据到图像
+	// 转换图像为DST格式以执行复制操作
+	transitionImageLayout(mainDevices.logicalDevice, graphicsQueue, graphicsCommandPool, texImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+
+	// 将纹理数据添加到向量中以供引用
+	textureImages.push_back(texImage);
+	textureImageMemory.push_back(texImageMemory);
+
+	// 销毁暂存缓冲区
+	vkDestroyBuffer(mainDevices.logicalDevice, imageStagingBuffer, nullptr);
+	vkFreeMemory(mainDevices.logicalDevice, imageStagingBufferMemory, nullptr);
+
+	// 返回新纹理图像的索引
+	return textureImages.size() - 1;
+}
+
+stbi_uc* VulkanRenderer::loadTextureFile(std::string fileName, int* width, int* height, VkDeviceSize* imageSize)
+{
+	int channels;
+
+	std::string fileLoc = "Textures/" + fileName;
+	stbi_uc* image = stbi_load(fileLoc.c_str(), width, height, &channels, STBI_rgb_alpha);
+
+	if (!image)
+	{
+		throw std::runtime_error("Failed to load a Texture file! (" + fileName + ")");
+	}
+
+	*imageSize = *width * *height * 4;
+
+	return image;
+}
+
 int VulkanRenderer::init(GLFWwindow* newWindow)
 {
 	this->window = newWindow;
@@ -1698,6 +1759,11 @@ void VulkanRenderer::cleanup()
 	// ###############################################################################
 	if (mainDevices.logicalDevice != VK_NULL_HANDLE) {
 		vkDeviceWaitIdle(mainDevices.logicalDevice);
+	}
+
+	for (size_t i = 0; i < textureImages.size(); ++i) {
+		vkDestroyImage(mainDevices.logicalDevice, textureImages[i], nullptr);
+		vkFreeMemory(mainDevices.logicalDevice, textureImageMemory[i], nullptr);
 	}
 
 	vkDestroyImageView(mainDevices.logicalDevice, depthBufferImageView, nullptr);
