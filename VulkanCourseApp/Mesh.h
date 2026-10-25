@@ -15,10 +15,13 @@ class Mesh
 {
 public:
 	Mesh(); // 先创建一个空 Mesh，VulkanRenderer::init() 中再为它创建顶点缓冲区。
-	Mesh(VkPhysicalDevice newPhysicalDevice, VkDevice newDevice, VkQueue transferQueue, VkCommandPool transferCommandPool, std::vector<Vertex>* vertices, std::vector<uint32_t>* indices); // 根据 CPU 顶点数组创建 Mesh。
+	Mesh(VkPhysicalDevice newPhysicalDevice, VkDevice newDevice, VkQueue transferQueue, 
+		VkCommandPool transferCommandPool, std::vector<Vertex>* vertices, std::vector<uint32_t>* indices, int newTexId); // 根据 CPU 顶点数组创建 Mesh。
 
 	void setModel(glm::mat4 newModel); // 替换模型矩阵；录制命令时由 vkCmdPushConstants 取走写入命令流。
 	Model getModel();                 // 返回当前模型数据块（含模型矩阵）。
+
+	int getTexId();
 
 	uint32_t getVertexCount();  // 返回顶点数组中的 Vertex 数量；当前索引绘制不直接使用它。
 	VkBuffer getVertexBuffer(); // 返回顶点缓冲区句柄，供 vkCmdBindVertexBuffers() 绑定。
@@ -32,6 +35,7 @@ public:
 
 private:
 	Model model;
+	int texId;
 
 	uint32_t vertexCount = 0;                         // 这份 Mesh 保存了多少个 Vertex；类型与 vkCmdDraw() 的要求一致。
 	VkBuffer vertexBuffer = VK_NULL_HANDLE;           // Buffer 句柄：描述一段可作为顶点输入的数据区域。

@@ -3,6 +3,7 @@
 // location 必须与 VkVertexInputAttributeDescription::location 一致。
 layout(location = 0) in vec3 pos; // 从 Vertex::pos 读取当前顶点的位置。
 layout(location = 1) in vec3 col; // 从 Vertex::col 读取当前顶点的颜色。
+layout(location = 2) in vec2 tex;
 
 layout(binding = 0) uniform UboViewProjection {
     mat4 view;
@@ -22,9 +23,11 @@ layout(push_constant) uniform PushModel {
 
 // 把颜色传给片段着色器；相同 location 表示两个着色器阶段的接口相连。
 layout(location = 0) out vec3 fragColour;
+layout(location = 1) out vec2 fragTex;
 
 void main() {
     gl_Position = uboViewProjection.proj * uboViewProjection.view * pushModel.model * vec4(pos, 1.0);
 
     fragColour = col;
+    fragTex = tex;
 }

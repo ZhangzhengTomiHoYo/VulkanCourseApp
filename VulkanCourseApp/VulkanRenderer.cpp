@@ -121,6 +121,7 @@ void VulkanRenderer::createLogicalDevice()
 
 	// 逻辑设备  将要使用的 物理设备的特性
 	VkPhysicalDeviceFeatures deviceFeatures{};
+	deviceFeatures.samplerAnisotropy = VK_TRUE;
 
 	// depthClamp 是物理设备的可选功能：只有创建设备时启用后，管线才能使用深度钳制。
 	// 注意：当前管线的 depthClampEnable 仍为 VK_FALSE，所以目前其实用不到该功能；
@@ -432,6 +433,28 @@ void VulkanRenderer::createDescriptorSetLayout()
 	if (result != VK_SUCCESS) {
 		throw std::runtime_error("Failed to create descriptor set layout!");
 	}
+
+	// CREATE TEXTURE SAMPLER DESCRIPTOR SET LAYOUT
+	// Texture binding info
+	VkDescriptorSetLayoutBinding samplerLayoutBinding = {};
+	samplerLayoutBinding.binding = 0;
+	samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	samplerLayoutBinding.descriptorCount = 1;
+	samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	samplerLayoutBinding.pImmutableSamplers = nullptr;
+
+	// Create a Descriptor Set Layout with given bindings for texture
+	VkDescriptorSetLayoutCreateInfo textureLayoutCreateInfo = {};
+	textureLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	textureLayoutCreateInfo.bindingCount = 1;
+	textureLayoutCreateInfo.pBindings = &samplerLayoutBinding;
+
+	// Create Descriptor Set Layout
+	result = vkCreateDescriptorSetLayout(mainDevices.logicalDevice, &textureLayoutCreateInfo, nullptr, &samplerSetLayout);
+	if (result != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to create a Descriptor Set Layout!");
+	}
 }
 
 void VulkanRenderer::createGraphicsPipeline()
@@ -485,7 +508,7 @@ void VulkanRenderer::createGraphicsPipeline()
 	bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
 	// 一个 Vertex 包含 position 和 color 两个属性，因此需要两份属性描述。
-	std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions{};
+	std::array<VkVertexInputAttributeDescription, 3> attributeDescriptions{};
 	// location 0 从 binding 0 中读取 Vertex::pos。
 	attributeDescriptions[0].binding = 0;
 	attributeDescriptions[0].location = 0;
@@ -499,6 +522,12 @@ void VulkanRenderer::createGraphicsPipeline()
 	attributeDescriptions[1].location = 1;
 	attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
 	attributeDescriptions[1].offset = offsetof(Vertex, col);
+
+	// Texture Attribute
+	attributeDescriptions[2].binding = 0;
+	attributeDescriptions[2].location = 2;
+	attributeDescriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
+	attributeDescriptions[2].offset = offsetof(Vertex, tex);
 
 	// -- Vertex Input（顶点输入）--
 	// 这个阶段描述“如何从顶点缓冲区读取每个顶点的数据”。
@@ -607,12 +636,13 @@ void VulkanRenderer::createGraphicsPipeline()
 	colorBlendingCreateInfo.attachmentCount = 1;
 	colorBlendingCreateInfo.pAttachments = &colorBlendAttachment;
 
+	std::array<VkDescriptorSetLayout, 2> descriptorSetLayouts = { descriptorSetLayout, samplerSetLayout };
 	// Pipeline Layout 是着色器访问外部资源时的“接口布局”。
 	// 当前着色器只使用自身写死的顶点数组，没有描述符集合和 Push Constant，因此两项数量都为 0。
 	VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo{};
 	pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-	pipelineLayoutCreateInfo.setLayoutCount = 1;
-	pipelineLayoutCreateInfo.pSetLayouts = &descriptorSetLayout;
+	pipelineLayoutCreateInfo.setLayoutCount = static_cast<uint32_t>(descriptorSetLayouts.size());
+	pipelineLayoutCreateInfo.pSetLayouts = descriptorSetLayouts.data();
 	// TODO（跟视频补）：shader 已经声明 push_constant 块 PushModel，这里要把
 	// pushConstantRangeCount 改为 1，并在 pPushConstantRanges 传入一个 VkPushConstantRange：
 	// stageFlags = VK_SHADER_STAGE_VERTEX_BIT，offset = 0，size = sizeof(Model)（64 字节）。
@@ -876,7 +906,10 @@ void VulkanRenderer::recordCommands(uint32_t currentImage)
 				&model
 			);
 
-			vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[i], 0, nullptr);
+			std::array<VkDescriptorSet, 2> descriptorSetGroup = { descriptorSets[currentImage], samplerDescriptorSets[meshList[meshIndex].getTexId()] };
+
+			vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 
+				0, static_cast<uint32_t>(descriptorSetGroup.size()), descriptorSetGroup.data(), 0, nullptr);
 
 			// 录制一次索引绘制：读取当前 Mesh 的全部索引，只绘制一个实例，
 			// 并从索引 0、顶点偏移 0、实例 0 开始。
@@ -999,8 +1032,25 @@ void VulkanRenderer::createDescriptorPool()
 	if (result != VK_SUCCESS) {
 		throw std::runtime_error("Failed to create descriptor pool!");
 	}
+	// CREATE SAMPLER DESCRIPTOR POOL
+	// Texture sampler pool
+	VkDescriptorPoolSize samplerPoolSize = {};
+	samplerPoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	samplerPoolSize.descriptorCount = MAX_OBJECTS;
 
+	VkDescriptorPoolCreateInfo samplerPoolCreateInfo = {};
+	samplerPoolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	samplerPoolCreateInfo.maxSets = MAX_OBJECTS;
+	samplerPoolCreateInfo.poolSizeCount = 1;
+	samplerPoolCreateInfo.pPoolSizes = &samplerPoolSize;
+
+	result = vkCreateDescriptorPool(mainDevices.logicalDevice, &samplerPoolCreateInfo, nullptr, &samplerDescriptorPool);
+	if (result != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to create a Descriptor Pool!");
+	}
 }
+
 
 void VulkanRenderer::createDescriptorSets()
 {
@@ -1081,6 +1131,32 @@ void VulkanRenderer::createDepthBufferImage()
 		VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &depthBufferImageMemory);
 
 	depthBufferImageView = createImageView(depthBufferImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
+}
+
+void VulkanRenderer::createTextureSampler()
+{
+	// Sampler Creation Info
+	VkSamplerCreateInfo samplerCreateInfo = {};
+	samplerCreateInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+	samplerCreateInfo.magFilter = VK_FILTER_LINEAR;						// How to render when image is magnified on screen
+	samplerCreateInfo.minFilter = VK_FILTER_LINEAR;						// How to render when image is minified on screen
+	samplerCreateInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;	// How to handle texture wrap in U (x) direction
+	samplerCreateInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;	// How to handle texture wrap in V (y) direction
+	samplerCreateInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;	// How to handle texture wrap in W (z) direction
+	samplerCreateInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;	// Border beyond texture (only workds for border clamp)
+	samplerCreateInfo.unnormalizedCoordinates = VK_FALSE;				// Whether coords should be normalized (between 0 and 1)
+	samplerCreateInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;		// Mipmap interpolation mode
+	samplerCreateInfo.mipLodBias = 0.0f;								// Level of Details bias for mip level
+	samplerCreateInfo.minLod = 0.0f;									// Minimum Level of Detail to pick mip level
+	samplerCreateInfo.maxLod = 0.0f;									// Maximum Level of Detail to pick mip level
+	samplerCreateInfo.anisotropyEnable = VK_TRUE;						// Enable Anisotropy
+	samplerCreateInfo.maxAnisotropy = 16;								// Anisotropy sample level
+
+	VkResult result = vkCreateSampler(mainDevices.logicalDevice, &samplerCreateInfo, nullptr, &textureSampler);
+	if (result != VK_SUCCESS)
+	{
+		throw std::runtime_error("Filed to create a Texture Sampler!");
+	}
 }
 
 void VulkanRenderer::updateUniformBuffer(uint32_t imageIndex)
@@ -1252,7 +1328,7 @@ bool VulkanRenderer::checkDeviceSuitable(VkPhysicalDevice device)
 		swapChainValid = !swapChainDetails.formats.empty() && !swapChainDetails.presentationModes.empty();
 	}
 
-	return indices.isValid() && extensionsSupported && swapChainValid;
+	return indices.isValid() && extensionsSupported && swapChainValid && deviceFeatures.samplerAnisotropy;
 }
 
 QueueFamilyIndices VulkanRenderer::getQueueFamilies(VkPhysicalDevice device)
@@ -1518,6 +1594,11 @@ int VulkanRenderer::createTextureImage(std::string fileName)
 	// 转换图像为DST格式以执行复制操作
 	transitionImageLayout(mainDevices.logicalDevice, graphicsQueue, graphicsCommandPool, texImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
+	// 拷贝图像数据
+	copyImageBuffer(mainDevices.logicalDevice, graphicsQueue, graphicsCommandPool, imageStagingBuffer, texImage, width, height);
+
+	// 将图像转换为着色器可读格式，供着色器使用
+	transitionImageLayout(mainDevices.logicalDevice, graphicsQueue, graphicsCommandPool, texImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
 	// 将纹理数据添加到向量中以供引用
 	textureImages.push_back(texImage);
@@ -1529,6 +1610,67 @@ int VulkanRenderer::createTextureImage(std::string fileName)
 
 	// 返回新纹理图像的索引
 	return textureImages.size() - 1;
+}
+
+int VulkanRenderer::createTexture(std::string fileName)
+{
+	// Create Texture Image and get its location in array
+	int textureImageLoc = createTextureImage(fileName);
+
+	// Create Image View and add to list
+	VkImageView imageView = createImageView(textureImages[textureImageLoc], VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
+	textureImageViews.push_back(imageView);
+
+	// Create Texture Descriptor
+	int descriptorLoc = createTextureDescriptor(imageView);
+
+	// Return location of set with texture
+	return descriptorLoc;
+}
+
+
+int VulkanRenderer::createTextureDescriptor(VkImageView textureImage)
+{
+	VkDescriptorSet descriptorSet;
+
+	// Descriptor Set Allocation Info
+	VkDescriptorSetAllocateInfo setAllocInfo = {};
+	setAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	setAllocInfo.descriptorPool = samplerDescriptorPool;
+	setAllocInfo.descriptorSetCount = 1;
+	setAllocInfo.pSetLayouts = &samplerSetLayout;
+
+	// Allocate Descriptor Sets
+	VkResult result = vkAllocateDescriptorSets(mainDevices.logicalDevice, &setAllocInfo, &descriptorSet);
+	if (result != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to allocate Texture Descriptor Sets!");
+	}
+
+	// Texture Image Info
+	VkDescriptorImageInfo imageInfo = {};
+	imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;	// Image layout when in use
+	imageInfo.imageView = textureImage;									// Image to bind to set
+	imageInfo.sampler = textureSampler;									// Sampler to use for set
+
+	// Descriptor Write Info
+	VkWriteDescriptorSet descriptorWrite = {};
+	descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	descriptorWrite.dstSet = descriptorSet;
+	descriptorWrite.dstBinding = 0;
+	descriptorWrite.dstArrayElement = 0;
+	descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	descriptorWrite.descriptorCount = 1;
+	descriptorWrite.pImageInfo = &imageInfo;
+
+	// Update new descriptor set
+	vkUpdateDescriptorSets(mainDevices.logicalDevice, 1, &descriptorWrite, 0, nullptr);
+
+	// Add descriptor set to list
+	samplerDescriptorSets.push_back(descriptorSet);
+
+	// Return descriptor set location
+	return samplerDescriptorSets.size() - 1;
 }
 
 stbi_uc* VulkanRenderer::loadTextureFile(std::string fileName, int* width, int* height, VkDeviceSize* imageSize)
@@ -1574,6 +1716,34 @@ int VulkanRenderer::init(GLFWwindow* newWindow)
 		// 投影矩阵和后续渲染资源都依赖交换链的实际尺寸。
 		createSwapChain();
 
+
+
+		// 初始化第 3 步：建立从交换链图像到 RenderPass、Framebuffer 和图形管线的渲染目标。
+// 交换链已就绪；RenderPass 必须先于图形管线和 Framebuffer 创建。
+		createRenderPass();
+		createDescriptorSetLayout();
+
+		createPushConstantRange();
+		createDepthBufferImage();
+		// 图形管线依赖逻辑设备和交换链格式；当前阶段先读取着色器并配置两个着色器阶段。
+		createGraphicsPipeline();
+		createFramebuffers();
+		// 初始化第 4 步：从已有的 Command Pool 分配绘图 Command Buffer，再录入实际绘图步骤。
+		createCommandBuffers();
+		createTextureSampler();
+		// Push Constants 改造：不再需要 CPU 对齐临时区，该步骤暂停使用。
+		// 动态 Uniform Buffer 的大小依赖 GPU 对齐要求，必须先计算跨度并准备 CPU 临时区。
+		//allocateDynamicBufferTransferSpace();
+		createUniformBuffers();
+		createDescriptorPool();
+		createDescriptorSets();
+		// Push Constants 改造：模型矩阵每帧变化，命令改为在 draw() 中每帧重新录制，init() 不再录制。
+		//recordCommands();
+		// 初始化第 5 步：创建绘制循环用于协调 CPU、图形队列和呈现队列的同步对象。
+		createSynchronization();
+
+		//int firstTexture = createTextureImage("giraffe.jpg");
+
 		uboViewProjection.proj = glm::perspective(glm::radians(45.0f), swapChainExtent.width / (float)swapChainExtent.height, 0.1f, 10.0f);
 		uboViewProjection.view = glm::lookAt(glm::vec3(0.0f, 0.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
 
@@ -1582,17 +1752,17 @@ int VulkanRenderer::init(GLFWwindow* newWindow)
 		// 初始化第 2 步：在 CPU 端准备两个 Mesh 的顶点和索引，再上传到设备本地显存。
 		// 每个 Vertex 同时包含位置和颜色；两个数组分别描述左、右两个矩形的四个顶点。
 		std::vector<Vertex> meshVertices1 = {
-			{{-0.4, 0.4, 0.0}, {1.0f, 0.0f, 0.0f}},
-			{{-0.4, -0.4, 0.0}, {0.0f, 1.0f, 0.0f}},
-			{{0.4, -0.4, 0.0}, {0.0f, 0.0f, 1.0f}},
-			{{0.4, 0.4, 0.0}, {1.0f, 0.0f, 0.0f}}
+			{ { -0.4, 0.4, 0.0 },{ 1.0f, 0.0f, 0.0f },{ 1.0f, 1.0f } },	// 0
+		{ { -0.4, -0.4, 0.0 },{ 1.0f, 0.0f, 0.0f },{ 1.0f, 0.0f } },	    // 1
+		{ { 0.4, -0.4, 0.0 },{ 1.0f, 0.0f, 0.0f },{ 0.0f, 0.0f } },    // 2
+		{ { 0.4, 0.4, 0.0 },{ 1.0f, 0.0f, 0.0f },{ 0.0f, 1.0f } },   // 3
 		};
 
 		std::vector<Vertex> meshVertices2 = {
-			{{-0.25, 0.6, 0.0}, {1.0f, 0.0f, 0.0f}},
-			{{-0.25, -0.6, 0.0}, {0.0f, 1.0f, 0.0f}},
-			{{0.25, -0.6, 0.0}, {0.0f, 0.0f, 1.0f}},
-			{{0.25, 0.6, 0.0}, {1.0f, 0.0f, 0.0f}}
+			{ { -0.25, 0.6, 0.0 },{ 0.0f, 0.0f, 1.0f },{ 1.0f, 1.0f } },	// 0
+		{ { -0.25, -0.6, 0.0 },{ 0.0f, 0.0f, 1.0f },{ 1.0f, 0.0f } },	    // 1
+		{ { 0.25, -0.6, 0.0 },{ 0.0f, 0.0f, 1.0f },{ 0.0f, 0.0f } },    // 2
+		{ { 0.25, 0.6, 0.0 },{ 0.0f, 0.0f, 1.0f },{ 0.0f, 1.0f } },   // 3
 		};
 
 		std::vector<uint32_t> meshIndices = {
@@ -1604,8 +1774,8 @@ int VulkanRenderer::init(GLFWwindow* newWindow)
 
 		// 两个 Mesh 使用不同的顶点数组，但可以使用相同的索引排列方式。
 		// 构造函数会分别为每个 Mesh 创建顶点 Buffer 和索引 Buffer，并上传到 NVIDIA 显存。
-		Mesh mesh1 = Mesh(mainDevices.physicalDevice, mainDevices.logicalDevice, graphicsQueue, graphicsCommandPool, &meshVertices1, &meshIndices);
-		Mesh mesh2 = Mesh(mainDevices.physicalDevice, mainDevices.logicalDevice, graphicsQueue, graphicsCommandPool, &meshVertices2, &meshIndices);
+		Mesh mesh1 = Mesh(mainDevices.physicalDevice, mainDevices.logicalDevice, graphicsQueue, graphicsCommandPool, &meshVertices1, &meshIndices, createTexture("aha.png"));
+		Mesh mesh2 = Mesh(mainDevices.physicalDevice, mainDevices.logicalDevice, graphicsQueue, graphicsCommandPool, &meshVertices2, &meshIndices, createTexture("shaoji.png"));
 
 		// Renderer 通过 meshList 统一保存需要绘制的 Mesh；录制命令时会依次遍历它们。
 		meshList = { mesh1, mesh2 };
@@ -1615,28 +1785,7 @@ int VulkanRenderer::init(GLFWwindow* newWindow)
 		meshList[0].setModel(meshModelMatrix);
 
 
-		// 初始化第 3 步：建立从交换链图像到 RenderPass、Framebuffer 和图形管线的渲染目标。
-		// 交换链已就绪；RenderPass 必须先于图形管线和 Framebuffer 创建。
-		createRenderPass();
-		createDescriptorSetLayout();
 
-		createPushConstantRange();
-		createDepthBufferImage();
-		// 图形管线依赖逻辑设备和交换链格式；当前阶段先读取着色器并配置两个着色器阶段。
-		createGraphicsPipeline();
-		createFramebuffers();
-		// 初始化第 4 步：从已有的 Command Pool 分配绘图 Command Buffer，再录入实际绘图步骤。
-		createCommandBuffers();
-		// Push Constants 改造：不再需要 CPU 对齐临时区，该步骤暂停使用。
-		// 动态 Uniform Buffer 的大小依赖 GPU 对齐要求，必须先计算跨度并准备 CPU 临时区。
-		//allocateDynamicBufferTransferSpace();
-		createUniformBuffers();
-		createDescriptorPool();
-		createDescriptorSets();
-		// Push Constants 改造：模型矩阵每帧变化，命令改为在 draw() 中每帧重新录制，init() 不再录制。
-		//recordCommands();
-		// 初始化第 5 步：创建绘制循环用于协调 CPU、图形队列和呈现队列的同步对象。
-		createSynchronization();
 	}
 	catch (const std::runtime_error& e) {
 		printf("Failed to initialize Vulkan renderer: %s\n", e.what());
@@ -1761,7 +1910,15 @@ void VulkanRenderer::cleanup()
 		vkDeviceWaitIdle(mainDevices.logicalDevice);
 	}
 
-	for (size_t i = 0; i < textureImages.size(); ++i) {
+
+	vkDestroyDescriptorPool(mainDevices.logicalDevice, samplerDescriptorPool, nullptr);
+	vkDestroyDescriptorSetLayout(mainDevices.logicalDevice, samplerSetLayout, nullptr);
+
+	vkDestroySampler(mainDevices.logicalDevice, textureSampler, nullptr);
+
+	for (size_t i = 0; i < textureImages.size(); i++)
+	{
+		vkDestroyImageView(mainDevices.logicalDevice, textureImageViews[i], nullptr);
 		vkDestroyImage(mainDevices.logicalDevice, textureImages[i], nullptr);
 		vkFreeMemory(mainDevices.logicalDevice, textureImageMemory[i], nullptr);
 	}

@@ -19,6 +19,7 @@ struct Vertex
 {
 	glm::vec3 pos; // Vertex Position (x, y, z)
 	glm::vec3 col; // Vertex Colour (r, g, b)
+	glm::vec2 tex; // (u, v)
 };
 
 // Indices (locations) of Queue Families (if they exist at all)
@@ -194,6 +195,28 @@ static void copyBuffer(VkDevice device, VkQueue transferQueue, VkCommandPool tra
 	endAndSubmitCommandBuffer(device, transferCommandPool, transferQueue, transferCommandBuffer);
 }
 
+static void copyImageBuffer(VkDevice device, VkQueue transferQueue, VkCommandPool transferCommandPool,
+	VkBuffer srcBuffer, VkImage image, uint32_t width, uint32_t height)
+{
+	// Create buffer
+	VkCommandBuffer transferCommandBuffer = beginCommandBuffer(device, transferCommandPool);
+
+	VkBufferImageCopy imageRegion = {};
+	imageRegion.bufferOffset = 0;											// Offset into data
+	imageRegion.bufferRowLength = 0;										// Row length of data to calculate data spacing
+	imageRegion.bufferImageHeight = 0;										// Image height to calculate data spacing
+	imageRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;	// Which aspect of image to copy
+	imageRegion.imageSubresource.mipLevel = 0;								// Mipmap level to copy
+	imageRegion.imageSubresource.baseArrayLayer = 0;						// Starting array layer (if array)
+	imageRegion.imageSubresource.layerCount = 1;							// Number of layers to copy starting at baseArrayLayer
+	imageRegion.imageOffset = { 0, 0, 0 };									// Offset into image (as opposed to raw data in bufferOffset)
+	imageRegion.imageExtent = { width, height, 1 };							// Size of region to copy as (x, y, z) values
+
+	// Copy buffer to given image
+	vkCmdCopyBufferToImage(transferCommandBuffer, srcBuffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &imageRegion);
+
+	endAndSubmitCommandBuffer(device, transferCommandPool, transferQueue, transferCommandBuffer);
+}
 
 static void transitionImageLayout(VkDevice device, VkQueue queue, VkCommandPool commandPool, VkImage image, VkImageLayout oldLayout, VkImageLayout newLayout)
 {

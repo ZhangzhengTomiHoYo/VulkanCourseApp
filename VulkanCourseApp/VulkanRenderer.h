@@ -54,15 +54,17 @@ private:
 	VkDeviceMemory depthBufferImageMemory;
 	VkImageView depthBufferImageView;
 
-	std::vector<VkImage> textureImages;
-	std::vector<VkDeviceMemory> textureImageMemory;
+	VkSampler textureSampler;
 
 	// - 描述符集 Descriptors
 	VkDescriptorSetLayout descriptorSetLayout; // 声明各 binding 的类型与使用阶段（binding 0 为 view/proj UBO）。
+	VkDescriptorSetLayout samplerSetLayout;
 	VkPushConstantRange pushConstantRange;     // Push Constant 改造：声明 PushModel 的阶段、偏移和大小（待在 createPushConstantRange() 中填写）。
 
 	VkDescriptorPool descriptorPool = VK_NULL_HANDLE; // 分配描述符集的池；销毁池会同时释放其中的描述符集。
+	VkDescriptorPool samplerDescriptorPool;
 	std::vector<VkDescriptorSet> descriptorSets;      // 每张交换链图像一个；录制命令时绑定到管线。
+	std::vector<VkDescriptorSet> samplerDescriptorSets;
 
 	// 每张交换链图像一份 view/proj Uniform Buffer 及其设备内存（每帧只写对应下标，避免读写冲突）。
 	std::vector<VkBuffer> viewProjUniformBuffers;
@@ -71,6 +73,11 @@ private:
 	// Push Constants 改造：动态 Model Uniform Buffer 已暂停创建，vector 保留为空，cleanup() 仍可安全遍历/clear。
 	std::vector<VkBuffer> modelUniformBuffers;
 	std::vector<VkDeviceMemory> modelUniformBuffersMemory;
+
+	//  -Assets
+	std::vector<VkImage> textureImages;
+	std::vector<VkDeviceMemory> textureImageMemory;
+	std::vector<VkImageView> textureImageViews;
 
 	// - Pipeline
 	VkPipelineLayout pipelineLayout = VK_NULL_HANDLE; // 着色器资源接口：绑定 1 个描述符集布局（view/proj）；Push Constant 范围待接入。
@@ -115,6 +122,8 @@ private:
 
 	void createDepthBufferImage();
 
+	void createTextureSampler();
+
 	void updateUniformBuffer(uint32_t imageIndex); // 每帧把 view/proj 矩阵写入本次交换链图像对应的 Uniform Buffer。
 
 	// - Get
@@ -145,6 +154,10 @@ private:
 	VkShaderModule createShaderModule(const std::vector<char>& code);                            // 把 SPIR-V 包装成 Shader Module。
 
 	int createTextureImage(std::string fileName);
+	int createTexture(std::string fileName);
+	int createTextureDescriptor(VkImageView textureImage);
+
+	// -- Loader
 	stbi_uc* loadTextureFile(std::string fileName, int* width, int* height, VkDeviceSize* imageSize);
 
 public:

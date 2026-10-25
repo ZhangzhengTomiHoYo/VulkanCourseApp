@@ -8,7 +8,7 @@ Mesh::Mesh()
 	// 真正取得逻辑设备以后，init() 才能创建带顶点缓冲区的 Mesh。
 }
 
-Mesh::Mesh(VkPhysicalDevice newPhysicalDevice, VkDevice newDevice, VkQueue transferQueue, VkCommandPool transferCommandPool, std::vector<Vertex>* vertices, std::vector<uint32_t>* indices)
+Mesh::Mesh(VkPhysicalDevice newPhysicalDevice, VkDevice newDevice, VkQueue transferQueue, VkCommandPool transferCommandPool, std::vector<Vertex>* vertices, std::vector<uint32_t>* indices, int newTexId)
 {
 	// size() 返回元素数量，不是字节数；索引绘制最终使用 indexCount 决定读取多少个索引。
 	vertexCount = static_cast<uint32_t>(vertices->size());
@@ -24,6 +24,7 @@ Mesh::Mesh(VkPhysicalDevice newPhysicalDevice, VkDevice newDevice, VkQueue trans
 
 	// 模型矩阵初始化为单位矩阵：不做任何平移/旋转/缩放，顶点保持在建模空间的原始位置。
 	model.model = glm::mat4(1.0f);
+	texId = newTexId;
 }
 
 void Mesh::setModel(glm::mat4 newModel)
@@ -35,6 +36,11 @@ void Mesh::setModel(glm::mat4 newModel)
 Model Mesh::getModel()
 {
 	return model;
+}
+
+int Mesh::getTexId()
+{
+	return texId;
 }
 
 uint32_t Mesh::getVertexCount()
