@@ -8,6 +8,10 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <assimp/Importer.hpp>
+#include <assimp/scene.h>
+#include <assimp/postprocess.h>
+
 #include <vector>
 #include <set>
 #include <stdexcept>
@@ -20,6 +24,9 @@
 
 #include "stb_image.h"
 
+#include "MeshModel.h"
+
+
 class VulkanRenderer
 {
 private:
@@ -28,7 +35,7 @@ private:
 	int currentFrame = 0; // 当前使用第几组帧同步对象；只在 0 到 MAX_FRAME_DRAWS - 1 之间循环。
 
 	// 场景对象
-	std::vector<Mesh> meshList; // 保存场景中所有 Mesh 对象；每个 Mesh 都有自己的顶点缓冲区和索引缓冲区。
+	std::vector<MeshModel> mMeshModelList; // 保存场景中所有 MeshModel 对象；MeshModel由多个Mesh组成；每个 Mesh 都有自己的顶点缓冲区和索引缓冲区。
 
 	// binding 0 的 View/Projection 数据块；每帧通过 updateUniformBuffer() 写入对应交换链图像的 Uniform Buffer。
 	struct UboViewProjection{
@@ -75,6 +82,8 @@ private:
 	std::vector<VkDeviceMemory> modelUniformBuffersMemory;
 
 	//  -Assets
+	std::vector<MeshModel> meshModelList;
+
 	std::vector<VkImage> textureImages;
 	std::vector<VkDeviceMemory> textureImageMemory;
 	std::vector<VkImageView> textureImageViews;
@@ -157,6 +166,8 @@ private:
 	int createTexture(std::string fileName);
 	int createTextureDescriptor(VkImageView textureImage);
 
+
+
 	// -- Loader
 	stbi_uc* loadTextureFile(std::string fileName, int* width, int* height, VkDeviceSize* imageSize);
 
@@ -171,6 +182,7 @@ public:
 	void draw();    // 取得交换链图像、每帧录制并提交一帧绘制命令，再提交呈现。
 	void cleanup(); // 等待 GPU 空闲后，按创建依赖的反方向释放全部 Vulkan 资源。
 
+	int createMeshModel(std::string meshModelFileName);
 
 };
 

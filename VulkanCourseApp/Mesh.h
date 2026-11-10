@@ -7,8 +7,8 @@
 #include "Utilities.h"
 
 // 模型变换数据块：当前只含一个模型矩阵（64 字节），与着色器 PushModel 块的布局一致。
-struct Model {
-	glm::mat4 model;
+struct ModelMatrix {
+	glm::mat4 modelMatrix;
 };
 
 class Mesh
@@ -18,8 +18,8 @@ public:
 	Mesh(VkPhysicalDevice newPhysicalDevice, VkDevice newDevice, VkQueue transferQueue, 
 		VkCommandPool transferCommandPool, std::vector<Vertex>* vertices, std::vector<uint32_t>* indices, int newTexId); // 根据 CPU 顶点数组创建 Mesh。
 
-	void setModel(glm::mat4 newModel); // 替换模型矩阵；录制命令时由 vkCmdPushConstants 取走写入命令流。
-	Model getModel();                 // 返回当前模型数据块（含模型矩阵）。
+	void setModelMatrix(glm::mat4 newModel); // 替换模型矩阵；录制命令时由 vkCmdPushConstants 取走写入命令流。
+	ModelMatrix getModelMatrix();                 // 返回当前模型数据块（含模型矩阵）。
 
 	int getTexId();
 
@@ -34,7 +34,7 @@ public:
 	~Mesh();
 
 private:
-	Model model;
+    ModelMatrix modelMatrix;
 	int texId;
 
 	uint32_t vertexCount = 0;                         // 这份 Mesh 保存了多少个 Vertex；类型与 vkCmdDraw() 的要求一致。

@@ -23,19 +23,19 @@ Mesh::Mesh(VkPhysicalDevice newPhysicalDevice, VkDevice newDevice, VkQueue trans
 	createIndexBuffer(transferQueue, transferCommandPool, indices);
 
 	// 模型矩阵初始化为单位矩阵：不做任何平移/旋转/缩放，顶点保持在建模空间的原始位置。
-	model.model = glm::mat4(1.0f);
+    modelMatrix.modelMatrix = glm::mat4(1.0f);
 	texId = newTexId;
 }
 
-void Mesh::setModel(glm::mat4 newModel)
+void Mesh::setModelMatrix(glm::mat4 newModelMatrix)
 {
 	// Model 是与着色器 push constant 块对应的外层结构；真正保存模型变换的是其中的 model 成员。
-	model.model = newModel;
+    modelMatrix.modelMatrix = newModelMatrix;
 }
 
-Model Mesh::getModel()
+ModelMatrix Mesh::getModelMatrix()
 {
-	return model;
+	return modelMatrix;
 }
 
 int Mesh::getTexId()

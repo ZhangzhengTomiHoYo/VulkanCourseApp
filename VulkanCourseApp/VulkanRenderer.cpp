@@ -10,84 +10,140 @@ VulkanRenderer::~VulkanRenderer()
 {
 }
 
+int VulkanRenderer::init(GLFWwindow *newWindow)
+{
+    this->window = newWindow;
+
+    try
+    {
+        createInstance();
+        createSurface();
+        getPhysicalDevice();
+        createLogicalDevice();
+        createCommandPool();
+        createSwapChain();
+        createRenderPass();
+        createDescriptorSetLayout();
+        createPushConstantRange();
+        createDepthBufferImage();
+        createGraphicsPipeline();
+        createFramebuffers();
+        createCommandBuffers();
+        createTextureSampler();
+        // allocateDynamicBufferTransferSpace();
+        createUniformBuffers();
+        createDescriptorPool();
+        createDescriptorSets();
+        createSynchronization();
+
+        uboViewProjection.proj =
+            glm::perspective(glm::radians(45.0f), swapChainExtent.width / (float)swapChainExtent.height, 0.1f, 10.0f);
+        uboViewProjection.view =
+            glm::lookAt(glm::vec3(0.0f, 0.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+
+        uboViewProjection.proj[1][1] *= -1; // 翻转 Y 轴，适应 Vulkan 的坐标系
+
+        createTexture("plain.png");
+    }
+    catch (const std::runtime_error &e)
+    {
+        printf("Failed to initialize Vulkan renderer: %s\n", e.what());
+        return EXIT_FAILURE;
+    }
+    return 0; // #define EXIT_FAILURE 1 所以返回0代表成功，返回1代表失败
+}
+
 void VulkanRenderer::createInstance()
 {
-	// ###############################################################################
-	// # 实例模块总流程                                                              #
-	// #                                                                             #
-	// # 1. 填写应用信息                                                             #
-	// # 2. 收集并检查所需扩展                                                       #
-	// # 3. 创建 VkInstance                                                          #
-	// ###############################################################################
-	// 应用程序本身的信息
-	// 大部分数据不会影响程序 并且 只是为了开发者方便
-	VkApplicationInfo appInfo{};
-	appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-	appInfo.pApplicationName = "Vulkan App";
-	appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
-	appInfo.pEngineName = "No Engine";
-	appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-	appInfo.apiVersion = VK_API_VERSION_1_4;				// Vulkan 版本
+	// 1. 应用程序本身的信息 大部分数据不会影响程序 并且 只是为了开发者方便
+    VkApplicationInfo appInfo{};
+    appInfo.sType              = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    appInfo.pApplicationName   = "Vulkan App";
+    appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
+    appInfo.pEngineName        = "No Engine";
+    appInfo.engineVersion      = VK_MAKE_VERSION(1, 0, 0);
+    appInfo.apiVersion         = VK_API_VERSION_1_4; // Vulkan 版本
+	
+	// 2. 检查GLFW所需要的Vulkan扩展
+    std::vector<const char *> instanceExtensions;
+    uint32_t                  glfwExtensionCount = 0;                        // GLFW 或许需要多个扩展
+    const char              **glfwExtensions;                                //
+    glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount); // 获取 GLFW 需要的扩展
+    for (size_t i = 0; i < glfwExtensionCount; i++)
+    {
+        instanceExtensions.push_back(glfwExtensions[i]);                     // 将 GLFW 的扩展添加到实例扩展向量中
+    }
+    if (!checkInstanceExtensionSupport(&instanceExtensions))                 // 检查Vulkan实例是否支持所需的扩展
+    {
+        throw std::runtime_error("VkInstance does not support GLFW required extensions!");
+    }
 
-	// Vulkan 实例创建信息结构体
-	VkInstanceCreateInfo createInfo{};  // 直接列表初始化（direct-list-initialization）  直接使用空初始化列表初始化对象
-	createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-	// createInfo.pNext = nullptr;		     // 默认就是 nullptr
-	// createInfo.flags = 0;				 // 默认就是 0
-	createInfo.pApplicationInfo = &appInfo;  // p开头意味着是一个指针类型
+	// 3. Vulkan 实例创建信息结构体
+    VkInstanceCreateInfo createInfo{};
+    createInfo.sType                   = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    createInfo.pNext                   = nullptr;                                  // 默认就是 nullptr
+    createInfo.flags                   = 0;                                        // 默认就是 0
+    createInfo.pApplicationInfo        = &appInfo;                                 // p开头意味着是一个指针类型
+    createInfo.enabledExtensionCount   = static_cast<uint32_t>(instanceExtensions.size());
+    createInfo.ppEnabledExtensionNames = instanceExtensions.data();
+    createInfo.enabledLayerCount       = 0;                                       // TODO: 设置实例将使用的验证层
+    createInfo.ppEnabledLayerNames     = nullptr;                                 // 验证层 比较难 先不做
 
-	// 创建向量存储 实例扩展
-	std::vector<const char*> instanceExtensions;
-
-	// 设置 实例扩展 将会使用该变量
-	uint32_t glfwExtensionCount = 0;  // GLFW 或许需要多个扩展
-	const char** glfwExtensions;      //
-
-	// 获取 GLFW 需要的扩展
-	glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
-
-	// 将 GLFW 的扩展添加到实例扩展向量中
-	for (size_t i = 0; i < glfwExtensionCount; i++) {
-		instanceExtensions.push_back(glfwExtensions[i]);
-	}
-
-	// 检查Vulkan实例是否支持所需的扩展
-	if (!checkInstanceExtensionSupport(&instanceExtensions)) {
-		throw std::runtime_error("VkInstance does not support required extensions!");
-	}
-
-	createInfo.enabledExtensionCount = static_cast<uint32_t>(instanceExtensions.size());
-	createInfo.ppEnabledExtensionNames = instanceExtensions.data();
-
-	// TODO: 设置实例将使用的验证层
-	// 验证层 比较难 先不做
-	createInfo.enabledLayerCount = 0;
-	createInfo.ppEnabledLayerNames = nullptr;
-
-	// 创建实例
-	// 中间的参数是内存分配器 比较难 先不做
-	VkResult result = vkCreateInstance(&createInfo, nullptr, &instance);
+	// 4. 创建实例
+    VkResult result = vkCreateInstance(&createInfo, nullptr, &instance);          // 中间的参数是内存分配器 比较难 先不做
 	if (result != VK_SUCCESS) {
 		throw std::runtime_error("Failed to create Vulkan instance!");
 	}
 }
 
+void VulkanRenderer::createSurface()
+{
+    VkResult result = glfwCreateWindowSurface(instance, window, nullptr, &surface);
+    if (result != VK_SUCCESS)
+    {
+        throw std::runtime_error("Failed to create window surface!");
+    }
+}
+
+void VulkanRenderer::getPhysicalDevice()
+{
+
+    mainDevices.physicalDevice = VK_NULL_HANDLE;
+    uint32_t deviceCount       = 0; // 枚举实例可以访问的物理设备
+    vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
+
+    if (deviceCount == 0)
+    {
+        throw std::runtime_error(
+            "Failed to find GPUs that support Vulkan Instance!"); // 虽然已经检查过扩展支持
+                                                                  // 但是还是要检查是否有可用的物理设备
+    }
+
+    std::vector<VkPhysicalDevice> devices(deviceCount);
+    vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
+
+    for (const auto &device : devices)
+    {
+        if (checkDeviceSuitable(device))
+        {
+            mainDevices.physicalDevice = device;
+            break;
+        }
+    }
+
+    if (mainDevices.physicalDevice ==
+        VK_NULL_HANDLE) // “有 GPU”不等于“有满足要求的 GPU”；没选中时不能继续创建逻辑设备。
+    {
+        throw std::runtime_error("Failed to find a suitable GPU!");
+    }
+}
+
 void VulkanRenderer::createLogicalDevice()
 {
-	// ###############################################################################
-	// # 逻辑设备模块总流程                                                          #
-	// #                                                                             #
-	// # 1. 确定所需队列族                                                           #
-	// # 2. 填写设备与队列申请                                                       #
-	// # 3. 创建 VkDevice                                                            #
-	// # 4. 取得 VkQueue 句柄                                                        #
-	// ###############################################################################
-	// 获取所选物理设备的队列族索引
 	QueueFamilyIndices indices = getQueueFamilies(mainDevices.physicalDevice);
 
 	std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
-	// 绘图和呈现可能属于同一个队列族。set 去重，避免为同一队列族重复填写申请。
-	std::set<int> queueFamilyIndices = { indices.graphicsFamily, indices.presentationFamily };
+	std::set<int> queueFamilyIndices = { indices.graphicsFamily, indices.presentationFamily }; // 绘图和呈现可能属于同一个队列族。set 去重，避免为同一队列族重复填写申请。
 
 	// 创建信息只保存 priority 的地址，不会复制它指向的数值。
 	// 所以变量必须活到下面 vkCreateDevice() 调用结束，不能定义在循环体内。
@@ -147,20 +203,7 @@ void VulkanRenderer::createLogicalDevice()
 	vkGetDeviceQueue(mainDevices.logicalDevice, indices.presentationFamily, 0, &presentationQueue);
 }
 
-void VulkanRenderer::createSurface()
-{
-	// ###############################################################################
-	// # Surface 模块总流程                                                          #
-	// #                                                                             #
-	// # 1. 把 GLFW 窗口与 Vulkan 实例连接                                           #
-	// # 2. 得到可供交换链呈现的 Surface                                             #
-	// ###############################################################################
-	VkResult result = glfwCreateWindowSurface(instance, window, nullptr, &surface);
-	if (result != VK_SUCCESS) {
-		throw std::runtime_error("Failed to create window surface!");
-	}
 
-}
 
 void VulkanRenderer::createSwapChain()
 {
@@ -335,7 +378,7 @@ void VulkanRenderer::createRenderPass()
 	// 先确定 srcSubpass 和 dstSubpass 分别是谁，再用 Stage 指定要同步到管线的哪个阶段，
 	// 最后用 Access 指定该阶段的哪种内存读写必须完成或可以开始。
 	// [0] 控制进入子通道前的等待，[1] 控制离开子通道后的可见性。
-	std::array<VkSubpassDependency, 2> subpassDependencies {};
+	std::array<VkSubpassDependency, 2> subpassDependencies{};
 
 	// 第一条依赖的来源：VK_SUBPASS_EXTERNAL 表示当前 Render Pass 外部、发生在它之前的操作。
 	subpassDependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
@@ -408,11 +451,11 @@ void VulkanRenderer::createDescriptorSetLayout()
 
 	// UboViewProjection binding 信息
 	VkDescriptorSetLayoutBinding uboViewProjectionLayoutBinding{};
-	uboViewProjectionLayoutBinding.binding = 0;	
-	uboViewProjectionLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;	
-	uboViewProjectionLayoutBinding.descriptorCount = 1;	
-	uboViewProjectionLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;	
-	uboViewProjectionLayoutBinding.pImmutableSamplers = nullptr;	
+	uboViewProjectionLayoutBinding.binding = 0;
+	uboViewProjectionLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	uboViewProjectionLayoutBinding.descriptorCount = 1;
+	uboViewProjectionLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	uboViewProjectionLayoutBinding.pImmutableSamplers = nullptr;
 
 	//VkDescriptorSetLayoutBinding modelLayoutBinding{};
 	//modelLayoutBinding.binding = 1;
@@ -566,7 +609,7 @@ void VulkanRenderer::createGraphicsPipeline()
 	// scissor 是硬裁剪区域：落在矩形外面的片段不会写入颜色附件。
 	// 这里同样覆盖整张交换链图像，因此暂时不会额外裁掉画面。
 	VkRect2D scissor{};
-	scissor.offset = {0, 0};
+	scissor.offset = { 0, 0 };
 	scissor.extent = swapChainExtent;
 
 	// 管线通过这个汇总结构取得视口和裁剪矩形。
@@ -825,28 +868,24 @@ void VulkanRenderer::recordCommands(uint32_t currentImage)
 	// # 5. 结束 RenderPass                                                          #
 	// # 6. 结束 Command Buffer                                                      #
 	// ###############################################################################
+
+
 	// Command Buffer 可以理解为交给 GPU 的“操作清单”。
-	// 这里做的是录制，不会立即执行；以后把它提交给 graphicsQueue 才真正运行。
-	VkCommandBufferBeginInfo commandBufferBeginInfo{};
-	// 指明当前结构体用于开始录制 Command Buffer。
-	commandBufferBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	VkCommandBufferBeginInfo commandBufferBeginInfo{};                            // 这里做的是录制，不会立即执行；以后把它提交给 graphicsQueue 才真正运行。
+	commandBufferBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;   // 指明当前结构体用于开始录制 Command Buffer。
 
 
 	// 下面的信息规定录制 vkCmdBeginRenderPass 时要使用哪个 RenderPass、哪块区域以及如何清屏。
 	VkRenderPassBeginInfo renderPassBeginInfo{};
-	// 指明当前结构体用于开始 RenderPass。
-	renderPassBeginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-	// 使用之前创建的 RenderPass 规则；具体 Framebuffer 会在循环里按下标填写。
-	renderPassBeginInfo.renderPass = renderPass;
-	// 渲染区域从 Framebuffer 左上角 (0, 0) 开始。
-	renderPassBeginInfo.renderArea.offset = { 0, 0 };
-	// 渲染区域覆盖整张交换链图像。
-	renderPassBeginInfo.renderArea.extent = swapChainExtent;
+	renderPassBeginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;      // 指明当前结构体用于开始 RenderPass。
+	renderPassBeginInfo.renderPass = renderPass;                               // 使用之前创建的 RenderPass 规则；具体 Framebuffer 会在循环里按下标填写。 
+	renderPassBeginInfo.renderArea.offset = { 0, 0 };                          // 渲染区域从 Framebuffer 左上角 (0, 0) 开始。
+	renderPassBeginInfo.renderArea.extent = swapChainExtent;                   // 渲染区域覆盖整张交换链图像。
 
 	// RenderPass 的颜色附件使用 LOAD_OP_CLEAR，因此开始时需要提供清除颜色。
 	// 四个分量依次是 R、G、B、A，取值范围通常为 0.0 到 1.0。
 	std::array<VkClearValue, 2> clearValues{};
-	clearValues[0].color = { 0.6f, 0.65f, 0.4f, 1.0f };
+	clearValues[0].color = { 1.0f, 1.0f, 1.0f, 1.0f };
 	clearValues[1].depthStencil.depth = 1.0f;
 
 	// pClearValues 指向清除值数组；数组下标与 RenderPass 中附件的下标对应。
@@ -855,75 +894,69 @@ void VulkanRenderer::recordCommands(uint32_t currentImage)
 	renderPassBeginInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
 
 	// 每个 Command Buffer 都绑定同下标的 Framebuffer；绘制规则相同，最终写入的交换链图像不同。
-	
-	int i = currentImage;
+	renderPassBeginInfo.framebuffer = swapchainFramebuffers[currentImage];
 
-		// 每份 Command Buffer 对应一个 Framebuffer；二者使用相同的交换链图像编号。
-		renderPassBeginInfo.framebuffer = swapchainFramebuffers[i];
+	// Start recording commands to command buffer!
+	VkResult result = vkBeginCommandBuffer(commandBuffers[currentImage], &commandBufferBeginInfo);
+	if (result != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to start recording a Command Buffer!");
+	}
 
-		// 进入录制状态；后面的全部 vkCmd* 都必须写入这一份正在录制的 Command Buffer。
-		VkResult result = vkBeginCommandBuffer(commandBuffers[i], &commandBufferBeginInfo);
-		if (result != VK_SUCCESS) {
-			throw std::runtime_error("Failed to begin command buffer!");
-		}
+	// Begin Render Pass
+	vkCmdBeginRenderPass(commandBuffers[currentImage], &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-		// 开始一次 RenderPass。INLINE 表示 Subpass 的命令直接写在当前 PRIMARY Command Buffer 中。
-		vkCmdBeginRenderPass(commandBuffers[i], &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+	// Bind Pipeline to be used in render pass
+	vkCmdBindPipeline(commandBuffers[currentImage], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
 
-		// 指定后续 Draw 使用哪条图形管线；Bind Point 必须与 Subpass 的 GRAPHICS 类型一致。
-		vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
-		// 一份 Command Buffer 可以依次绘制多个 Mesh；meshIndex 只负责选择 Mesh，
-		// 不能拿它访问 commandBuffers，否则会把命令写进未开始录制的对象。
-		for (size_t meshIndex = 0; meshIndex < meshList.size(); ++meshIndex) {
-			// 当前 Mesh 只有一条顶点数据流，因此这里只绑定一个顶点 Buffer。
-			VkBuffer vertexBuffers[] = { meshList[meshIndex].getVertexBuffer() };
-			// 从 Buffer 的第 0 字节开始读取第一个 Vertex。
-			VkDeviceSize offsets[] = { 0 };
-			// 参数中的 firstBinding = 0，与管线创建时 bindingDescription.binding = 0 对应。
-			// 后续 Draw 执行时，顶点输入阶段会按 stride 和 attribute 描述读取这段 Buffer。
-			vkCmdBindVertexBuffers(commandBuffers[i], 0, 1, vertexBuffers, offsets);
-			// 索引 Buffer 中的每个 uint32_t 都是一个顶点编号。
-			vkCmdBindIndexBuffer(commandBuffers[i], meshList[meshIndex].getIndexBuffer(), 0, VK_INDEX_TYPE_UINT32);
-			
-			// Push Constants 改造：dynamicOffset 与动态 Model UBO 绑定已废弃。
-			// 旧写法——同一份描述符指向整个模型 Uniform Buffer；dynamicOffset 决定本次 Draw 从哪一块读取模型矩阵。
-			// 这里必须使用“对齐后的跨度”，不能直接使用 sizeof(Model)，否则偏移可能违反 GPU 的对齐要求。
-			//uint32_t dynamicOffset = static_cast<uint32_t>(modelUniformAlignment * meshIndex);
+	for (size_t j = 0; j < mMeshModelList.size(); j++)
+	{
+		MeshModel& thisModel = mMeshModelList[j];
+		glm::mat4 modelMatrix = thisModel.getModelMatrix();
+		vkCmdPushConstants(
+			commandBuffers[currentImage],
+			pipelineLayout,
+			VK_SHADER_STAGE_VERTEX_BIT,		// Stage to push constants to
+			0,								// Offset of push constants to update
+			sizeof(ModelMatrix),					// Size of data being pushed
+			&modelMatrix);			// Actual data being pushed (can be array)
 
-			// TODO（跟视频补）：view/proj 仍在 binding 0，这里要重新绑定描述符，只是不再需要动态偏移：
-			// vkCmdBindDescriptorSets 传 firstSet=0、descriptorSetCount=1、&descriptorSets[i]，
-			// 且 dynamicOffsetCount=0、pDynamicOffsets=nullptr。下面旧写法因为带 dynamicOffset 已被注释。
-			//vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[i], 1, &dynamicOffset);
+		for (size_t k = 0; k < thisModel.getMeshCount(); k++)
+		{
 
-			// getModel() 按值返回；先保存为局部变量，再传地址。调用时数据会被复制进命令缓冲区。
-			Model model = meshList[meshIndex].getModel();
-			vkCmdPushConstants(
-				commandBuffers[currentImage], 
-				pipelineLayout,
-				VK_SHADER_STAGE_VERTEX_BIT,
-				0,
-				sizeof(Model),
-				&model
-			);
+			VkBuffer vertexBuffers[] = { thisModel.getMesh(k)->getVertexBuffer() };					// Buffers to bind
+			VkDeviceSize offsets[] = { 0 };												// Offsets into buffers being bound
+			vkCmdBindVertexBuffers(commandBuffers[currentImage], 0, 1, vertexBuffers, offsets);	// Command to bind vertex buffer before drawing with them
 
-			std::array<VkDescriptorSet, 2> descriptorSetGroup = { descriptorSets[currentImage], samplerDescriptorSets[meshList[meshIndex].getTexId()] };
+			// Bind mesh index buffer, with 0 offset and using the uint32 type
+			vkCmdBindIndexBuffer(commandBuffers[currentImage], thisModel.getMesh(k)->getIndexBuffer(), 0, VK_INDEX_TYPE_UINT32);
 
-			vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 
+			// Dynamic Offset Amount
+			// uint32_t dynamicOffset = static_cast<uint32_t>(modelUniformAlignment) * j;
+
+			// "Push" constants to given shader stage directly (no buffer)
+
+
+			std::array<VkDescriptorSet, 2> descriptorSetGroup = { descriptorSets[currentImage],
+				samplerDescriptorSets[thisModel.getMesh(k)->getTexId()] };
+
+			// Bind Descriptor Sets
+			vkCmdBindDescriptorSets(commandBuffers[currentImage], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
 				0, static_cast<uint32_t>(descriptorSetGroup.size()), descriptorSetGroup.data(), 0, nullptr);
 
-			// 录制一次索引绘制：读取当前 Mesh 的全部索引，只绘制一个实例，
-			// 并从索引 0、顶点偏移 0、实例 0 开始。
-			vkCmdDrawIndexed(commandBuffers[i], meshList[meshIndex].getIndexCount(), 1, 0, 0, 0);
+			// Execute pipeline
+			vkCmdDrawIndexed(commandBuffers[currentImage], thisModel.getMesh(k)->getIndexCount(), 1, 0, 0, 0);
 		}
+	}
 
-		// 结束 RenderPass；Vulkan 会按 RenderPass 描述保存颜色并把图像转为最终布局。
-		vkCmdEndRenderPass(commandBuffers[i]);
-		// 结束整份 Command Buffer 的录制，使它可以在之后提交给 Queue。
-		result = vkEndCommandBuffer(commandBuffers[i]);
-		if (result != VK_SUCCESS) {
-			throw std::runtime_error("Failed to end command buffer!");
-		}
-	
+	// 结束 RenderPass；Vulkan 会按 RenderPass 描述保存颜色并把图像转为最终布局。
+	vkCmdEndRenderPass(commandBuffers[currentImage]);
+	// 结束整份 Command Buffer 的录制，使它可以在之后提交给 Queue。
+	result = vkEndCommandBuffer(commandBuffers[currentImage]);
+	if (result != VK_SUCCESS) {
+		throw std::runtime_error("Failed to end command buffer!");
+	}
+
 }
 
 void VulkanRenderer::createSynchronization()
@@ -1083,7 +1116,7 @@ void VulkanRenderer::createDescriptorSets()
 		uboViewProjectionBufferInfo.range = sizeof(UboViewProjection);
 
 		VkWriteDescriptorSet uboViewProjectionSetWrite{};
-		uboViewProjectionSetWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; 
+		uboViewProjectionSetWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		uboViewProjectionSetWrite.dstSet = descriptorSets[i];
 		uboViewProjectionSetWrite.dstBinding = 0;
 		uboViewProjectionSetWrite.dstArrayElement = 0;
@@ -1116,7 +1149,7 @@ void VulkanRenderer::createPushConstantRange()
 {
 	pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 	pushConstantRange.offset = 0;
-	pushConstantRange.size = sizeof(Model);
+	pushConstantRange.size = sizeof(ModelMatrix);
 }
 
 void VulkanRenderer::createDepthBufferImage()
@@ -1127,7 +1160,7 @@ void VulkanRenderer::createDepthBufferImage()
 		VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
 	);
 
-	depthBufferImage = createImage(swapChainExtent.width, swapChainExtent.height, depthFormat, 
+	depthBufferImage = createImage(swapChainExtent.width, swapChainExtent.height, depthFormat,
 		VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &depthBufferImageMemory);
 
 	depthBufferImageView = createImageView(depthBufferImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
@@ -1186,46 +1219,7 @@ void VulkanRenderer::updateUniformBuffer(uint32_t imageIndex)
 	//vkUnmapMemory(mainDevices.logicalDevice, modelUniformBuffersMemory[imageIndex]);
 }
 
-void VulkanRenderer::getPhysicalDevice()
-{
-	// ###############################################################################
-	// # 物理设备模块总流程                                                          #
-	// #                                                                             #
-	// # 1. 枚举 GPU                                                                 #
-	// # 2. 逐个检查队列、扩展和交换链支持                                           #
-	// # 3. 保存第一块满足要求的 GPU                                                 #
-	// ###############################################################################
-	mainDevices.physicalDevice = VK_NULL_HANDLE;
-	// 枚举实例可以访问的物理设备
-	uint32_t deviceCount = 0;
-	vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
 
-	// 虽然已经检查过扩展支持 但是还是要检查是否有可用的物理设备
-	if (deviceCount == 0) {
-		throw std::runtime_error("Failed to find GPUs that support Vulkan Instance!");
-	}
-
-	std::vector<VkPhysicalDevice> devices(deviceCount);
-	vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
-
-	for (const auto& device : devices) {
-		if (checkDeviceSuitable(device)) {
-			mainDevices.physicalDevice = device;
-			break;
-		}
-	}
-	// “有 GPU”不等于“有满足要求的 GPU”；没选中时不能继续创建逻辑设备。
-	if (mainDevices.physicalDevice == VK_NULL_HANDLE) {
-		throw std::runtime_error("Failed to find a suitable GPU!");
-	}
-
-	// Push Constants 改造：模型矩阵不再走动态 Uniform Buffer，这里不再需要查询动态 Uniform 的对齐值。
-	//VkPhysicalDeviceProperties deviceProperties;
-	//vkGetPhysicalDeviceProperties(mainDevices.physicalDevice, &deviceProperties);
-	//// 动态 Uniform 的偏移必须是这个数的整数倍；具体数值由当前 NVIDIA GPU 报告。
-	//minUniformBufferOffsetAlignment = deviceProperties.limits.minUniformBufferOffsetAlignment;
-
-}
 
 /* Push Constants 改造：模型矩阵不再经过动态 Uniform Buffer，CPU 对齐临时区不再需要，整个函数暂停使用。
  * 若以后改回动态 UBO，恢复本函数、头文件中的声明以及 init() 里的调用即可。
@@ -1614,10 +1608,8 @@ int VulkanRenderer::createTextureImage(std::string fileName)
 
 int VulkanRenderer::createTexture(std::string fileName)
 {
-	// Create Texture Image and get its location in array
 	int textureImageLoc = createTextureImage(fileName);
 
-	// Create Image View and add to list
 	VkImageView imageView = createImageView(textureImages[textureImageLoc], VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
 	textureImageViews.push_back(imageView);
 
@@ -1673,6 +1665,40 @@ int VulkanRenderer::createTextureDescriptor(VkImageView textureImage)
 	return samplerDescriptorSets.size() - 1;
 }
 
+int VulkanRenderer::createMeshModel(std::string meshModelFileName)
+{
+	Assimp::Importer importer;
+	const aiScene* scene = importer.ReadFile(meshModelFileName, aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_JoinIdenticalVertices);
+	if (!scene)
+	{
+		throw std::runtime_error("Failed to load model! (" + meshModelFileName + ")");
+	}
+
+	std::vector<std::string> textureNames = MeshModel::LoadMaterials(scene);  	// 纹理路径
+	std::vector<int> textureToDesriptor(textureNames.size());                   // 记录 材质编号 → 纹理描述符编号
+
+	for (size_t i = 0; i < textureNames.size(); i++)
+	{
+		if (textureNames[i].empty())
+		{
+            textureToDesriptor[i] = 0;
+		}
+		else
+		{
+            textureToDesriptor[i] = createTexture(textureNames[i]);
+		}
+	}
+
+	// Load in all our meshes
+	std::vector<Mesh> modelMeshes = MeshModel::LoadNode(mainDevices.physicalDevice, mainDevices.logicalDevice, graphicsQueue, graphicsCommandPool, scene->mRootNode, scene, textureToDesriptor);
+
+	// Create mesh model and add to list
+	MeshModel meshModel = MeshModel(modelMeshes);
+	mMeshModelList.push_back(meshModel);
+
+	return mMeshModelList.size() - 1;
+}
+
 stbi_uc* VulkanRenderer::loadTextureFile(std::string fileName, int* width, int* height, VkDeviceSize* imageSize)
 {
 	int channels;
@@ -1690,121 +1716,19 @@ stbi_uc* VulkanRenderer::loadTextureFile(std::string fileName, int* width, int* 
 	return image;
 }
 
-int VulkanRenderer::init(GLFWwindow* newWindow)
+
+
+void VulkanRenderer::updateModel(int modelID, glm::mat4 newModelMatrix)
 {
-	this->window = newWindow;
-
-	try {
-		// ###############################################################################
-		// # 渲染器初始化总流程                                                          #
-		// #                                                                             #
-		// # 1. 建立 Vulkan 基础对象                                                     #
-		// # 2. 创建顶点资源                                                             #
-		// # 3. 建立呈现目标与图形管线                                                   #
-		// # 4. 准备并录制绘图命令                                                       #
-		// # 5. 创建运行时同步对象                                                       #
-		// ###############################################################################
-
-		// 初始化第 1 步：建立基础对象，并创建上传顶点时所需的 Command Pool。
-		createInstance();
-		createSurface();
-		getPhysicalDevice();
-		createLogicalDevice();
-		// Mesh::copyBuffer() 需要从该 Pool 分配临时 Command Buffer，
-		// 所以必须在创建 Mesh 之前先创建 Command Pool。
-		createCommandPool();
-		// 投影矩阵和后续渲染资源都依赖交换链的实际尺寸。
-		createSwapChain();
-
-
-
-		// 初始化第 3 步：建立从交换链图像到 RenderPass、Framebuffer 和图形管线的渲染目标。
-// 交换链已就绪；RenderPass 必须先于图形管线和 Framebuffer 创建。
-		createRenderPass();
-		createDescriptorSetLayout();
-
-		createPushConstantRange();
-		createDepthBufferImage();
-		// 图形管线依赖逻辑设备和交换链格式；当前阶段先读取着色器并配置两个着色器阶段。
-		createGraphicsPipeline();
-		createFramebuffers();
-		// 初始化第 4 步：从已有的 Command Pool 分配绘图 Command Buffer，再录入实际绘图步骤。
-		createCommandBuffers();
-		createTextureSampler();
-		// Push Constants 改造：不再需要 CPU 对齐临时区，该步骤暂停使用。
-		// 动态 Uniform Buffer 的大小依赖 GPU 对齐要求，必须先计算跨度并准备 CPU 临时区。
-		//allocateDynamicBufferTransferSpace();
-		createUniformBuffers();
-		createDescriptorPool();
-		createDescriptorSets();
-		// Push Constants 改造：模型矩阵每帧变化，命令改为在 draw() 中每帧重新录制，init() 不再录制。
-		//recordCommands();
-		// 初始化第 5 步：创建绘制循环用于协调 CPU、图形队列和呈现队列的同步对象。
-		createSynchronization();
-
-		//int firstTexture = createTextureImage("giraffe.jpg");
-
-		uboViewProjection.proj = glm::perspective(glm::radians(45.0f), swapChainExtent.width / (float)swapChainExtent.height, 0.1f, 10.0f);
-		uboViewProjection.view = glm::lookAt(glm::vec3(0.0f, 0.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-
-		uboViewProjection.proj[1][1] *= -1; // 翻转 Y 轴，适应 Vulkan 的坐标系
-
-		// 初始化第 2 步：在 CPU 端准备两个 Mesh 的顶点和索引，再上传到设备本地显存。
-		// 每个 Vertex 同时包含位置和颜色；两个数组分别描述左、右两个矩形的四个顶点。
-		std::vector<Vertex> meshVertices1 = {
-			{ { -0.4, 0.4, 0.0 },{ 1.0f, 0.0f, 0.0f },{ 1.0f, 1.0f } },	// 0
-		{ { -0.4, -0.4, 0.0 },{ 1.0f, 0.0f, 0.0f },{ 1.0f, 0.0f } },	    // 1
-		{ { 0.4, -0.4, 0.0 },{ 1.0f, 0.0f, 0.0f },{ 0.0f, 0.0f } },    // 2
-		{ { 0.4, 0.4, 0.0 },{ 1.0f, 0.0f, 0.0f },{ 0.0f, 1.0f } },   // 3
-		};
-
-		std::vector<Vertex> meshVertices2 = {
-			{ { -0.25, 0.6, 0.0 },{ 0.0f, 0.0f, 1.0f },{ 1.0f, 1.0f } },	// 0
-		{ { -0.25, -0.6, 0.0 },{ 0.0f, 0.0f, 1.0f },{ 1.0f, 0.0f } },	    // 1
-		{ { 0.25, -0.6, 0.0 },{ 0.0f, 0.0f, 1.0f },{ 0.0f, 0.0f } },    // 2
-		{ { 0.25, 0.6, 0.0 },{ 0.0f, 0.0f, 1.0f },{ 0.0f, 1.0f } },   // 3
-		};
-
-		std::vector<uint32_t> meshIndices = {
-			// 索引存的是顶点数组下标。前 3 个索引组成第一个三角形，后 3 个组成第二个三角形。
-			// 下标 0、2 会被两个三角形复用，因此矩形只需要保存 4 份 Vertex，而不是重复保存 6 份。
-			0, 1, 2,
-			2, 3, 0
-		};
-
-		// 两个 Mesh 使用不同的顶点数组，但可以使用相同的索引排列方式。
-		// 构造函数会分别为每个 Mesh 创建顶点 Buffer 和索引 Buffer，并上传到 NVIDIA 显存。
-		Mesh mesh1 = Mesh(mainDevices.physicalDevice, mainDevices.logicalDevice, graphicsQueue, graphicsCommandPool, &meshVertices1, &meshIndices, createTexture("aha.png"));
-		Mesh mesh2 = Mesh(mainDevices.physicalDevice, mainDevices.logicalDevice, graphicsQueue, graphicsCommandPool, &meshVertices2, &meshIndices, createTexture("shaoji.png"));
-
-		// Renderer 通过 meshList 统一保存需要绘制的 Mesh；录制命令时会依次遍历它们。
-		meshList = { mesh1, mesh2 };
-
-		glm::mat4 meshModelMatrix = meshList[0].getModel().model;
-		meshModelMatrix = glm::rotate(meshModelMatrix, glm::radians(45.0f), glm::vec3(1.0f, 0.0f, 0.0f));
-		meshList[0].setModel(meshModelMatrix);
-
-
-
-	}
-	catch (const std::runtime_error& e) {
-		printf("Failed to initialize Vulkan renderer: %s\n", e.what());
-		// 中途失败时，也释放之前已经成功创建的对象。
-		cleanup();
-		return EXIT_FAILURE;  // #define EXIT_FAILURE 1 所以返回0代表成功，返回1代表失败
-	}
-	return 0;
-}
-
-void VulkanRenderer::updateModel(int modelID, glm::mat4 newModel)
-{
-	if (modelID < 0 || modelID >= meshList.size()) {
-		throw std::out_of_range("Invalid model ID");
+	if (modelID < 0 || modelID >= mMeshModelList.size())
+	{
+		throw std::out_of_range("Invalid Mesh Model ID");
+		return;
 	}
 
 	// 主循环把每个 Mesh 的最新模型矩阵写入 Mesh；下一次 draw() 录制命令时会读取它。
 	// Push Constants 改造完成后，该矩阵将由 vkCmdPushConstants 写进命令流，不再上传到动态 Uniform Buffer。
-	meshList[modelID].setModel(newModel);
+	mMeshModelList[modelID].setModel(newModelMatrix);
 }
 
 void VulkanRenderer::draw()
@@ -1910,6 +1834,10 @@ void VulkanRenderer::cleanup()
 		vkDeviceWaitIdle(mainDevices.logicalDevice);
 	}
 
+	for (size_t i = 0; i < mMeshModelList.size(); i++)
+	{
+		mMeshModelList[i].destroyMeshModel();
+	}
 
 	vkDestroyDescriptorPool(mainDevices.logicalDevice, samplerDescriptorPool, nullptr);
 	vkDestroyDescriptorSetLayout(mainDevices.logicalDevice, samplerSetLayout, nullptr);
@@ -1968,11 +1896,6 @@ void VulkanRenderer::cleanup()
 	modelUniformBuffers.clear();
 	modelUniformBuffersMemory.clear();
 
-	// 顶点 Buffer 和它绑定的显存都是逻辑设备的子对象，必须先于 vkDestroyDevice() 释放。
-	for (size_t i = 0; i < meshList.size(); i++)
-	{
-		meshList[i].destroyBuffers();
-	}
 
 	// renderFinished 的数量等于交换链图像数，要单独全部销毁。
 	for (VkSemaphore semaphore : renderFinishedSemaphores) {

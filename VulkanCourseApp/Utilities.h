@@ -7,7 +7,9 @@
 
 #include <glm/glm.hpp>
 
-const int MAX_OBJECTS = 2;
+using Matrix4x4 = glm::mat4;
+
+const int MAX_OBJECTS = 50;
 const int MAX_FRAME_DRAWS = 2;
 
 const std::vector<const char*> deviceExtensions = {
@@ -18,7 +20,7 @@ const std::vector<const char*> deviceExtensions = {
 struct Vertex
 {
 	glm::vec3 pos; // Vertex Position (x, y, z)
-	glm::vec3 col; // Vertex Colour (r, g, b)
+	glm::vec3 col; // Vertex Color (r, g, b)
 	glm::vec2 tex; // (u, v)
 };
 
@@ -82,10 +84,8 @@ static uint32_t findMemoryTypeIndex(VkPhysicalDevice physicalDevice, uint32_t al
 
 	for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; i++)
 	{
-		if ((allowedTypes & (1 << i))														// Index of memory type must match corresponding bit in allowedTypes
-			&& (memoryProperties.memoryTypes[i].propertyFlags & properties) == properties)	// Desired property bit flags are part of memory type's property flags
+		if ((allowedTypes & (1 << i)) && (memoryProperties.memoryTypes[i].propertyFlags & properties) == properties)
 		{
-			// This memory type is valid, so return its index
 			return i;
 		}
 	}

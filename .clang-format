@@ -1,0 +1,5 @@
+BasedOnStyle: Microsoft
+
+# Align consecutive assignment operators and variable declarations.
+AlignConsecutiveAssignments: true
+AlignConsecutiveDeclarations: true

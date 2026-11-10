@@ -1,4 +1,5 @@
-﻿#define STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_WINDOWS_UTF8
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 
 #define GLFW_INCLUDE_VULKAN
@@ -13,43 +14,29 @@
 GLFWwindow* window;
 VulkanRenderer vulkanRenderer;
 
-void initWindow(std::string wName = "Test Window", const int width = 800, const int height = 600) {
-	// 初始化 GLFW
-	glfwInit();
-
-	// 设置 GLFW 不创建 OpenGL 上下文
-	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+void initWindow(std::string wName, const int width, const int height) {
+	glfwInit();                                      // 初始化 GLFW    
+	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);    // 设置 GLFW 不创建 OpenGL 上下文
 	glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
-
 	window = glfwCreateWindow(width, height, wName.c_str(), nullptr, nullptr);
 }
 
-int main() {
-	// ###############################################################################
-	// # 程序最顶层流程                                                              #
-	// #                                                                             #
-	// # 1. 创建窗口                                                                 #
-	// # 2. 初始化 Vulkan 渲染器                                                     #
-	// # 3. 循环绘制并呈现                                                           #
-	// # 4. 反向释放资源                                                             #
-	// ###############################################################################
-
-	// 总流程第 1 步：创建供 Vulkan 显示图像的 GLFW 窗口。
-	initWindow("Vulkan Window", 800, 600);
-
-	// 总流程第 2 步：创建 Vulkan 对象、渲染资源和同步对象。
+int main() 
+{
+	initWindow("Vulkan Window", 1920, 1080);
 	if (vulkanRenderer.init(window) == EXIT_FAILURE) {
-		// 渲染器会清理已创建的 Vulkan 对象；窗口和 GLFW 由这里负责清理。
 		glfwDestroyWindow(window);
 		glfwTerminate();
 		return EXIT_FAILURE;
 	}
 
 	float angle = 0.0f;
-	float deltaTime = 0.0f; 
+	float deltaTime = 0.0f;
 	float lastTime = 0.0f;
 
-	// 总流程第 3 步：不断处理窗口事件，并绘制、呈现下一张图像。
+	// 加载模型
+	int wuwa_imiss = vulkanRenderer.createMeshModel("Models/wuwa_imiss/wuwa_imiss.pmx");
+
 	while (!glfwWindowShouldClose(window)) {
 		glfwPollEvents();
 
@@ -57,20 +44,16 @@ int main() {
 		deltaTime = now - lastTime;
 		lastTime = now;
 
-		angle += deltaTime * 10.0f;
+		angle += deltaTime * 100.0f;
 		if (angle > 360.0f) { angle -= 360.0f; }
 
+		// TRS 构造模型矩阵
 		glm::mat4 firstModel = glm::mat4(1.0f);
-		glm::mat4 secondModel = glm::mat4(1.0f);
+		firstModel = glm::translate(firstModel, glm::vec3(0.0f, -1.0f, -1.0f));
+		firstModel = glm::rotate(firstModel, glm::radians(angle), glm::vec3(0.0f, 1.0f, 0.0f));
+		firstModel = glm::scale(firstModel, glm::vec3(0.1f));
 
-		firstModel = glm::translate(firstModel, glm::vec3(0.3f, 0.0f, -3.5f));
-		firstModel = glm::rotate(firstModel, glm::radians(angle), glm::vec3(0.0f, 0.0f, 1.0f));
-
-		secondModel = glm::translate(secondModel, glm::vec3(0.0f, 0.0f, -3.0f));
-		secondModel = glm::rotate(secondModel, glm::radians(-angle*10), glm::vec3(0.0f, 0.0f, 1.0f));
-
-		vulkanRenderer.updateModel(0, firstModel);
-		vulkanRenderer.updateModel(1, secondModel);
+		vulkanRenderer.updateModel(wuwa_imiss, firstModel);
 		// 每轮循环提交一帧绘制任务，并把画好的交换链图像提交给呈现队列。
 		vulkanRenderer.draw();
 	}
@@ -81,6 +64,7 @@ int main() {
 	// Vulkan 已不再使用窗口，此时才能销毁窗口并结束 GLFW。
 	glfwDestroyWindow(window);
 	glfwTerminate();
+
 
 	return 0;
 }
