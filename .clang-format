@@ -1,5 +1,8 @@
 BasedOnStyle: Microsoft
 
+# Keep long Vulkan assignments on one line instead of wrapping at 120 columns.
+ColumnLimit: 0
+
 # Align consecutive assignment operators and variable declarations.
 AlignConsecutiveAssignments: true
 AlignConsecutiveDeclarations: true
